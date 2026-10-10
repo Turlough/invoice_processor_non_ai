@@ -1,6 +1,6 @@
 # Invoice Processor (PoC)
 
-PyQt6 desktop app for extracting **line items** from supplier invoices stored as PDF. The first milestone ignores header metadata (supplier name, invoice number, etc.) and focuses on aligning a user-defined grid with the line-item table, then reading cell text from the PDF’s existing text layer (typical of OCR’d scans).
+PyQt6 desktop app for extracting **line items** from supplier invoices stored as PDF. The first milestone ignores header metadata (supplier name, invoice number, etc.) and focuses on aligning a user-defined grid with the line-item table, then reading each cell — from the PDF text layer, or with PaddleOCR when the page is image-only.
 
 ## Is “Read → Line items” feasible?
 
@@ -10,9 +10,9 @@ Limitations to be aware of:
 
 | Situation | Behaviour |
 |-----------|-----------|
-| PDF has a text layer (OCR embedded) | Works; align the grid, then **Read → Line items** |
-| PDF is image-only (no text objects) | No words returned; you would need an OCR step (out of scope for this PoC) |
-| Skewed scans or inconsistent OCR | Cells may need manual cleanup in the grid; later we can add snap-to-text or template profiles per supplier |
+| PDF has a text layer | Align the grid, then **Read → Line items** |
+| PDF is image-only (no text objects) | Align the grid, then **Read → OCR grid** (PaddleOCR) |
+| Skewed scans or uneven recognition | Cells may need manual cleanup in the table; later we can add snap-to-text or template profiles per supplier |
 
 ## UI layout
 
@@ -30,11 +30,13 @@ Three panels (horizontal splitter):
 - **Layout → Draw grid** creates evenly spaced dividers inside the region.
 - **Drag** internal horizontal or vertical lines (not the outer border) so cell boundaries match the printed/OCR layout.
 - **Read → Line items** fills the right-hand table from PDF text in each cell.
+- **Read → OCR grid** renders the table region and fills the same table with [PaddleOCR](https://www.paddleocr.ai/). The first run downloads the PP-OCRv6 models and can take several minutes. Later runs reuse them. The window stays responsive while recognition runs.
 
 ## Requirements
 
 - Python ≥ 3.13
-- Dependencies: `PyQt6`, `pymupdf` (see `pyproject.toml`)
+- Dependencies: `PyQt6`, `pymupdf`, `paddleocr`, `paddlepaddle` (see `pyproject.toml`)
+- Network access the first time you use **Read → OCR grid** (model download)
 
 ## Run locally
 
@@ -59,6 +61,7 @@ invoice_app/
   pdf_panel.py          # PDF render + row/col controls
   grid_overlay.py       # Draggable grid lines
   pdf_text.py           # Word extraction and cell assignment
+  pdf_ocr.py            # PaddleOCR on the table region
 AGENTS.md               # Guidance for AI agents (DOX)
 ```
 
@@ -68,7 +71,6 @@ AGENTS.md               # Guidance for AI agents (DOX)
 - Per-supplier layout templates (save grid fractions and column semantics)
 - Header/metadata extraction
 - Export (CSV/Excel)
-- Image-only PDF fallback OCR
 
 ## GitLab / workflow
 

@@ -1,11 +1,14 @@
 [project]
 name = "invoice-processor"
 version = "0.1.0"
-description = "PyQt6 proof of concept for grid-based invoice line-item extraction from OCR'd PDFs"
+description = "PyQt6 proof of concept for grid-based invoice line-item extraction from PDF text or PaddleOCR"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "PyQt6>=6.7.0",
+    "paddleocr>=3.7.0",
+    # 3.3.x CPU oneDNN breaks PaddleOCR when image sizes change. 3.2.2 has a cp313 Windows wheel.
+    "paddlepaddle==3.2.2",
     "pymupdf>=1.24.0",
 ]
 

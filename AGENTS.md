@@ -14,8 +14,9 @@ Batch-process supplier invoices (PDF, often OCR’d) into structured line items.
 - **Layout → Draw grid** — cell grid inside region only; user drags internal lines
 - Centre panel fits page to available area (`PdfPanel._apply_fit`)
 - **Read → Line items** — map cells to PDF coordinates; fill table from `get_text("words")` via PyMuPDF
+- **Read → OCR grid** — rasterise the table region and fill the same table with PaddleOCR (`pdf_ocr.py`). Use this when the page has no text layer. One OCR pass; line boxes are assigned to cells by centre, same idea as line items
 
-Do **not** add OCR engines, cloud APIs, or supplier templates unless the user asks.
+Do **not** add other OCR engines, cloud APIs, or supplier templates unless the user asks. Grid OCR stays on PaddleOCR.
 
 ## Tech stack
 
@@ -23,6 +24,7 @@ Do **not** add OCR engines, cloud APIs, or supplier templates unless the user as
 |-------|--------|
 | UI | PyQt6 |
 | PDF render + text | PyMuPDF (`fitz`) |
+| OCR | PaddleOCR 3.x (PP-OCRv6) on PaddlePaddle 3.2.2, CPU, oneDNN off |
 | Packaging | `pyproject.toml`, Python ≥ 3.13 |
 
 ## Code conventions
@@ -34,16 +36,16 @@ Do **not** add OCR engines, cloud APIs, or supplier templates unless the user as
 
 ## Extension points (future)
 
-1. **`pdf_text.py`** — cell assignment heuristics (reading order, multi-line cells, header row skip).
+1. **`pdf_text.py` / `pdf_ocr.py`** — cell assignment heuristics (reading order, multi-line cells, header row skip). OCR runs off the UI thread in `_OcrGridWorker` so the Paddle engine stays on one thread.
 2. **`grid_overlay.py`** — optional region-of-interest box limiting grid to line-item band only.
 3. **Templates** — JSON per supplier: fractions, column names, page index.
 4. **Persistence** — save grid + table edits per file.
 
 ## Feasibility notes for agents
 
-- **Read from existing OCR text layer**: standard PDF text extraction; implemented in PoC.
-- **Image-only PDFs**: require Tesseract/cloud OCR; not in repo yet.
-- **Multi-page**: extend `PdfPanel` page index and file list behaviour.
+- **Read from existing text layer**: **Read → Line items** (`page.get_text("words")`).
+- **Image-only PDFs**: **Read → OCR grid**. First run downloads PP-OCRv6 models (network). PaddlePaddle stays pinned at 3.2.2; 3.3.x CPU oneDNN breaks repeated inference.
+- **Multi-page**: extend `PdfPanel` page index and file list behaviour. Both reads currently use page 0.
 
 ## Commands
 
