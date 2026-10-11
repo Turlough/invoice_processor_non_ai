@@ -9,10 +9,14 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from platformdirs import user_config_dir
+
+APP_NAME = "invoice_processor"
 CONFIG_FILE = "project_config.json"
+APP_CONFIG_FILE = "app_config.json"
 DATA_DIRECTORY_KEY = "data-directory"
 
 
@@ -91,4 +95,41 @@ class Project:
         return sorted(
             (p for p in root.iterdir() if p.is_dir()),
             key=lambda p: p.name.lower(),
+        )
+
+
+def user_state_path() -> Path:
+    """Per-user state file, e.g. %APPDATA% on Windows, ~/.config on Linux."""
+    return Path(user_config_dir(APP_NAME)) / APP_CONFIG_FILE
+
+
+@dataclass
+class AppState:
+    """Last-used location, so the app reopens where the user left off."""
+
+    project: str | None = None
+    batch: str | None = None
+    pdf: str | None = None
+
+    @classmethod
+    def load(cls) -> "AppState":
+        path = user_state_path()
+        if path.is_file():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return cls(
+                        project=data.get("project") or None,
+                        batch=data.get("batch") or None,
+                        pdf=data.get("pdf") or None,
+                    )
+            except (OSError, ValueError):
+                pass
+        return cls()
+
+    def save(self) -> None:
+        path = user_state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(asdict(self), indent=2) + "\n", encoding="utf-8"
         )

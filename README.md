@@ -53,6 +53,8 @@ CONFIG_DIRECTORY/
 
 So: many projects, each with many batches.
 
+The last-used project, batch and PDF are stored per user in the OS config location (`%APPDATA%\invoice_processor\app_config.json` on Windows, `~/.config/invoice_processor/app_config.json` on Linux) and restored on the next launch.
+
 ## Run locally
 
 ```bash

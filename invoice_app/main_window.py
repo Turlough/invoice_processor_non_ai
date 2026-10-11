@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
 from invoice_app.pdf_ocr import read_grid, region_image
 from invoice_app.pdf_panel import PdfPanel
 from invoice_app.pdf_text import words_in_rect, words_on_page
-from invoice_app.projects import ConfigError, Project, list_projects
+from invoice_app.projects import AppState, ConfigError, Project, list_projects
 
 
 class _OcrGridWorker(QThread):
@@ -95,6 +95,7 @@ class MainWindow(QMainWindow):
 
         self._folder: Path | None = None
         self._project: Project | None = None
+        self._state = AppState.load()
         self._ocr_busy = False
         self._ocr_progress: QProgressDialog | None = None
         self._ocr_worker = _OcrGridWorker(self)
@@ -133,6 +134,7 @@ class MainWindow(QMainWindow):
 
         self._build_menus()
         self._resize_table()
+        self._restore_state()
 
     def _build_menus(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
@@ -193,6 +195,10 @@ class MainWindow(QMainWindow):
                 return
             project.set_data_directory(Path(directory))
         self._project = project
+        self._state.project = project.name
+        self._state.batch = None
+        self._state.pdf = None
+        self._save_state()
         self.statusBar().showMessage(
             f"Project: {name} — data directory: {project.data_directory}", 8000
         )
@@ -224,7 +230,7 @@ class MainWindow(QMainWindow):
                 lambda _checked=False, p=path: self._load_batch(p)
             )
 
-    def _load_batch(self, folder: Path) -> None:
+    def _load_batch(self, folder: Path, select_name: str | None = None) -> None:
         self._folder = folder
         self._file_list.clear()
         pdfs = sorted(folder.glob("*.pdf")) + sorted(folder.glob("*.PDF"))
@@ -237,21 +243,64 @@ class MainWindow(QMainWindow):
             item = QListWidgetItem(path.name)
             item.setData(Qt.ItemDataRole.UserRole, str(path))
             self._file_list.addItem(item)
+        self._state.batch = folder.name
+        self._save_state()
         self.statusBar().showMessage(
             f"Batch: {folder.name} — {self._file_list.count()} PDFs", 8000
         )
+        row = 0
+        if select_name is not None:
+            for i in range(self._file_list.count()):
+                if self._file_list.item(i).text() == select_name:
+                    row = i
+                    break
         if self._file_list.count():
-            self._file_list.setCurrentRow(0)
+            self._file_list.setCurrentRow(row)
+
+    def _save_state(self) -> None:
+        try:
+            self._state.save()
+        except OSError as exc:
+            self.statusBar().showMessage(f"Could not save app state: {exc}", 8000)
+
+    def _restore_state(self) -> None:
+        """Reopen the last project, batch and PDF. Never prompts or raises."""
+        state = self._state
+        if not state.project:
+            return
+        try:
+            if state.project not in list_projects():
+                return
+            project = Project.load(state.project)
+        except (ConfigError, OSError):
+            return
+        self._project = project
+        root = project.data_directory
+        if root is None or not root.is_dir():
+            self.statusBar().showMessage(f"Project: {project.name} (restored)", 8000)
+            return
+        batches = {p.name: p for p in project.list_batches()}
+        folder = batches.get(state.batch or "")
+        if folder is None:
+            self.statusBar().showMessage(f"Project: {project.name} (restored)", 8000)
+            return
+        self._load_batch(folder, select_name=state.pdf)
 
     def _on_file_selected(self, current: QListWidgetItem | None, _previous) -> None:
         if current is None:
             self._pdf_panel.clear()
+            if self._state.pdf is not None:
+                self._state.pdf = None
+                self._save_state()
             return
         path = Path(current.data(Qt.ItemDataRole.UserRole))
         try:
             self._pdf_panel.load_pdf(path)
         except Exception as exc:
             QMessageBox.warning(self, "Open PDF", f"Could not open {path.name}:\n{exc}")
+            return
+        self._state.pdf = path.name
+        self._save_state()
 
     def _table_region(self) -> None:
         if self._pdf_panel.document() is None:
