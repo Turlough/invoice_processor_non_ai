@@ -10,6 +10,7 @@ dependencies = [
     # 3.3.x CPU oneDNN breaks PaddleOCR when image sizes change. 3.2.2 has a cp313 Windows wheel.
     "paddlepaddle==3.2.2",
     "pymupdf>=1.24.0",
+    "python-dotenv>=1.0.0",
 ]
 
 [project.scripts]

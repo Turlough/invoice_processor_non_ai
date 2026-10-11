@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 from invoice_app.pdf_ocr import read_grid, region_image
 from invoice_app.pdf_panel import PdfPanel
 from invoice_app.pdf_text import words_in_rect, words_on_page
+from invoice_app.projects import ConfigError, Project, list_projects
 
 
 class _OcrGridWorker(QThread):
@@ -93,6 +94,7 @@ class MainWindow(QMainWindow):
         self.resize(1280, 800)
 
         self._folder: Path | None = None
+        self._project: Project | None = None
         self._ocr_busy = False
         self._ocr_progress: QProgressDialog | None = None
         self._ocr_worker = _OcrGridWorker(self)
@@ -134,8 +136,10 @@ class MainWindow(QMainWindow):
 
     def _build_menus(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
-        load_action = file_menu.addAction("&Load folder…")
-        load_action.triggered.connect(self._load_folder)
+        self._project_menu = file_menu.addMenu("&Project")
+        self._project_menu.aboutToShow.connect(self._populate_project_menu)
+        self._batch_menu = file_menu.addMenu("Load &batch")
+        self._batch_menu.aboutToShow.connect(self._populate_batch_menu)
         file_menu.addSeparator()
         quit_action = file_menu.addAction("E&xit")
         quit_action.triggered.connect(QApplication.instance().quit)
@@ -152,13 +156,78 @@ class MainWindow(QMainWindow):
         ocr_grid = read_menu.addAction("OCR &grid")
         ocr_grid.triggered.connect(self._ocr_grid)
 
-    def _load_folder(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "Select invoice folder")
-        if not directory:
+    def _populate_project_menu(self) -> None:
+        self._project_menu.clear()
+        try:
+            names = list_projects()
+        except ConfigError as exc:
+            action = self._project_menu.addAction(str(exc))
+            action.setEnabled(False)
             return
-        self._folder = Path(directory)
+        if not names:
+            action = self._project_menu.addAction("(no projects)")
+            action.setEnabled(False)
+            return
+        for name in names:
+            action = self._project_menu.addAction(name)
+            action.setCheckable(True)
+            action.setChecked(
+                self._project is not None and self._project.name == name
+            )
+            action.triggered.connect(
+                lambda _checked=False, n=name: self._select_project(n)
+            )
+
+    def _select_project(self, name: str) -> None:
+        try:
+            project = Project.load(name)
+        except (ConfigError, OSError) as exc:
+            QMessageBox.warning(self, "Project", str(exc))
+            return
+        if project.data_directory is None:
+            directory = QFileDialog.getExistingDirectory(
+                self,
+                f"Choose the data directory for project “{name}”",
+            )
+            if not directory:
+                return
+            project.set_data_directory(Path(directory))
+        self._project = project
+        self.statusBar().showMessage(
+            f"Project: {name} — data directory: {project.data_directory}", 8000
+        )
+
+    def _populate_batch_menu(self) -> None:
+        self._batch_menu.clear()
+        project = self._project
+        if project is None:
+            action = self._batch_menu.addAction("(choose a project first)")
+            action.setEnabled(False)
+            return
+        root = project.data_directory
+        if root is None or not root.is_dir():
+            action = self._batch_menu.addAction(
+                f"(data directory not found: {root})"
+            )
+            action.setEnabled(False)
+            return
+        batches = project.list_batches()
+        if not batches:
+            action = self._batch_menu.addAction("(no batches)")
+            action.setEnabled(False)
+            return
+        for path in batches:
+            action = self._batch_menu.addAction(path.name)
+            action.setCheckable(True)
+            action.setChecked(self._folder is not None and self._folder == path)
+            action.triggered.connect(
+                lambda _checked=False, p=path: self._load_batch(p)
+            )
+
+    def _load_batch(self, folder: Path) -> None:
+        self._folder = folder
         self._file_list.clear()
-        pdfs = sorted(self._folder.glob("*.pdf")) + sorted(self._folder.glob("*.PDF"))
+        pdfs = sorted(folder.glob("*.pdf")) + sorted(folder.glob("*.PDF"))
         seen: set[str] = set()
         for path in pdfs:
             key = str(path.resolve()).lower()
@@ -168,6 +237,9 @@ class MainWindow(QMainWindow):
             item = QListWidgetItem(path.name)
             item.setData(Qt.ItemDataRole.UserRole, str(path))
             self._file_list.addItem(item)
+        self.statusBar().showMessage(
+            f"Batch: {folder.name} — {self._file_list.count()} PDFs", 8000
+        )
         if self._file_list.count():
             self._file_list.setCurrentRow(0)
 

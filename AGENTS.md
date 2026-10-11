@@ -9,7 +9,9 @@ Batch-process supplier invoices (PDF, often OCR’d) into structured line items.
 ## PoC scope (current)
 
 - PyQt6: file list | PDF preview + draggable grid | line-item table
-- **File → Load folder** — list `*.pdf` in a directory
+- `.env` sets `CONFIG_DIRECTORY` (loaded via python-dotenv); each subdirectory is a **project** with a `project_config.json` (`invoice_app/projects.py`)
+- **File → Project** — pick a project; creates `project_config.json` if missing, folder-picks and records `data-directory` if unset
+- **File → Load batch** — list `*.pdf` from a subdirectory of the project's `data-directory` (a *batch*)
 - **Layout → Table region…** — rubber-band rectangle (normalized coords on preview)
 - **Layout → Draw grid** — cell grid inside region only; user drags internal lines
 - Centre panel fits page to available area (`PdfPanel._apply_fit`)

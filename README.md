@@ -18,7 +18,7 @@ Limitations to be aware of:
 
 Three panels (horizontal splitter):
 
-1. **Left** — PDF filenames from the folder chosen via **File → Load folder…**
+1. **Left** — PDF filenames from the batch chosen via **File → Project** (pick a project) then **File → Load batch** (pick a batch folder)
 2. **Centre** — Current PDF page with **Rows** / **Cols** spin boxes; red dashed grid after **Layout → Draw grid**
 3. **Right** — `QTableWidget` with the same row/column count as the grid
 
@@ -35,8 +35,23 @@ Three panels (horizontal splitter):
 ## Requirements
 
 - Python ≥ 3.13
-- Dependencies: `PyQt6`, `pymupdf`, `paddleocr`, `paddlepaddle` (see `pyproject.toml`)
+- Dependencies: `PyQt6`, `pymupdf`, `paddleocr`, `paddlepaddle`, `python-dotenv` (see `pyproject.toml`)
 - Network access the first time you use **Read → OCR grid** (model download)
+
+## Configuration
+
+Copy `env.example` to `.env` and point `CONFIG_DIRECTORY` at your config directory. Each subdirectory there is a **project** holding a `project_config.json`:
+
+```
+CONFIG_DIRECTORY/
+  Emerald/
+    project_config.json     # { "data-directory": "/path/to/invoice/root" }
+```
+
+- **File → Project** lists the project directories. Picking one creates `project_config.json` if missing, and asks for the project's **data directory** (a folder picker) if the config has no `data-directory` yet — the choice is written back to the JSON file.
+- **File → Load batch** lists the subdirectories of the data directory. Each is a *batch*: a folder of similar invoice PDFs shown in the left panel.
+
+So: many projects, each with many batches.
 
 ## Run locally
 
@@ -58,6 +73,7 @@ invoice-processor
 main.py                 # Application entry
 invoice_app/
   main_window.py        # Menus, splitter, read pipeline
+  projects.py           # CONFIG_DIRECTORY, project_config.json, batches
   pdf_panel.py          # PDF render + row/col controls
   grid_overlay.py       # Draggable grid lines
   pdf_text.py           # Word extraction and cell assignment
