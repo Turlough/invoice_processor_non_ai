@@ -43,6 +43,51 @@ def _pixmap_rgb(pix: fitz.Pixmap):
     return np.ascontiguousarray(image)
 
 
+def page_pdf_rect(doc: fitz.Document, page_index: int = 0) -> tuple[float, float, float, float]:
+    page = doc[page_index]
+    r = page.rect
+    return (r.x0, r.y0, r.x1, r.y1)
+
+
+def _clip_and_zoom(
+    page: fitz.Page, pdf_rect: tuple[float, float, float, float]
+) -> tuple[fitz.Rect, float]:
+    x0, y0, x1, y1 = pdf_rect
+    width_pt = x1 - x0
+    height_pt = y1 - y0
+    if width_pt < 1.0 or height_pt < 1.0:
+        raise ValueError("The region is too small to rasterise.")
+    zoom = _render_zoom(width_pt, height_pt)
+    clip = fitz.Rect(
+        max(page.rect.x0, x0 - _PAD_PT),
+        max(page.rect.y0, y0 - _PAD_PT),
+        min(page.rect.x1, x1 + _PAD_PT),
+        min(page.rect.y1, y1 + _PAD_PT),
+    )
+    return clip, zoom
+
+
+def words_raster_to_pdf(
+    words: list[Word],
+    pdf_rect: tuple[float, float, float, float],
+    page: fitz.Page,
+) -> list[Word]:
+    """Map OCR boxes from full pixmap pixels into PDF user space."""
+    clip, zoom = _clip_and_zoom(page, pdf_rect)
+    converted: list[Word] = []
+    for w in words:
+        converted.append(
+            Word(
+                clip.x0 + w.x0 / zoom,
+                clip.y0 + w.y0 / zoom,
+                clip.x0 + w.x1 / zoom,
+                clip.y0 + w.y1 / zoom,
+                w.text,
+            )
+        )
+    return converted
+
+
 def region_image(
     doc: fitz.Document,
     page_index: int,
@@ -61,13 +106,7 @@ def region_image(
         raise ValueError("The table region is too small to OCR.")
 
     page = doc[page_index]
-    zoom = _render_zoom(width_pt, height_pt)
-    clip = fitz.Rect(
-        max(page.rect.x0, x0 - _PAD_PT),
-        max(page.rect.y0, y0 - _PAD_PT),
-        min(page.rect.x1, x1 + _PAD_PT),
-        min(page.rect.y1, y1 + _PAD_PT),
-    )
+    clip, zoom = _clip_and_zoom(page, pdf_rect)
     pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=clip, alpha=False)
     image = _pixmap_rgb(pix)
     origin = ((x0 - clip.x0) * zoom, (y0 - clip.y0) * zoom)

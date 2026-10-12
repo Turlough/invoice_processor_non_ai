@@ -87,6 +87,39 @@ class Project:
         self.config[DATA_DIRECTORY_KEY] = str(path)
         self.save()
 
+    def column_names(self) -> list[str]:
+        """Column `name` values from project config (visualisation / infer hints)."""
+        raw = self.config.get("columns")
+        if not isinstance(raw, list):
+            return []
+        names: list[str] = []
+        for entry in raw:
+            if isinstance(entry, dict):
+                name = entry.get("name")
+                if isinstance(name, str) and name.strip():
+                    names.append(name.strip())
+        return names
+
+    def header_row_count(self) -> int:
+        raw = self.config.get("header-row-count", 1)
+        if isinstance(raw, int) and raw >= 0:
+            return raw
+        return 1
+
+    def col_fracs(self) -> list[float] | None:
+        raw = self.config.get("col-fracs")
+        if not isinstance(raw, list) or len(raw) < 2:
+            return None
+        try:
+            return [float(v) for v in raw]
+        except (TypeError, ValueError):
+            return None
+
+    def set_col_fracs(self, fracs: list[float]) -> None:
+        """Persist column divider fractions (0..1 inside the table region)."""
+        self.config["col-fracs"] = [float(v) for v in fracs]
+        self.save()
+
     def list_batches(self) -> list[Path]:
         """Subdirectories of the data directory, each a batch of PDFs."""
         root = self.data_directory

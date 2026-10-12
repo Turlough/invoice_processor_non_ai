@@ -26,6 +26,19 @@ def words_on_page(doc: fitz.Document, page_index: int) -> list[Word]:
     ]
 
 
+def words_in_pdf_rect(
+    words: list[Word], x0: float, y0: float, x1: float, y1: float
+) -> list[Word]:
+    """Words whose centre lies inside the PDF rectangle."""
+    kept: list[Word] = []
+    for w in words:
+        cx = (w.x0 + w.x1) / 2
+        cy = (w.y0 + w.y1) / 2
+        if x0 <= cx <= x1 and y0 <= cy <= y1:
+            kept.append(w)
+    return kept
+
+
 def words_in_rect(words: list[Word], x0: float, y0: float, x1: float, y1: float) -> str:
     """Return text for words whose centre lies inside the rectangle (PDF coords)."""
     picked: list[tuple[float, float, str]] = []

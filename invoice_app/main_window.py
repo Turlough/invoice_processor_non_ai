@@ -22,10 +22,68 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
 )
 
-from invoice_app.pdf_ocr import read_grid, region_image
+from invoice_app.grid_infer import InferHints, infer_from_words
+from invoice_app.pdf_ocr import (
+    ocr_image,
+    page_pdf_rect,
+    read_grid,
+    region_image,
+    words_raster_to_pdf,
+)
 from invoice_app.pdf_panel import PdfPanel
-from invoice_app.pdf_text import words_in_rect, words_on_page
+from invoice_app.pdf_text import Word, words_in_pdf_rect, words_in_rect, words_on_page
 from invoice_app.projects import AppState, ConfigError, Project, list_projects
+
+
+class _OcrWordsWorker(QThread):
+    """Run PaddleOCR on a rasterised region; emit word boxes in image pixels."""
+
+    succeeded = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._mutex = QMutex()
+        self._cond = QWaitCondition()
+        self._image = None
+        self._stop = False
+
+    def submit(self, image) -> None:
+        self._mutex.lock()
+        self._image = image
+        self._cond.wakeOne()
+        self._mutex.unlock()
+        if not self.isRunning():
+            self.start()
+
+    def shutdown(self) -> None:
+        self._mutex.lock()
+        self._stop = True
+        self._cond.wakeOne()
+        self._mutex.unlock()
+
+    def run(self) -> None:
+        while True:
+            self._mutex.lock()
+            while self._image is None and not self._stop:
+                self._cond.wait(self._mutex)
+            if self._image is None and self._stop:
+                self._mutex.unlock()
+                return
+            image = self._image
+            self._image = None
+            self._mutex.unlock()
+            try:
+                words = ocr_image(image)
+                self.succeeded.emit(words)
+            except Exception as exc:
+                traceback.print_exc()
+                self.failed.emit(str(exc))
+            self._mutex.lock()
+            stop = self._stop and self._image is None
+            self._mutex.unlock()
+            if stop:
+                return
 
 
 class _OcrGridWorker(QThread):
@@ -101,12 +159,23 @@ class MainWindow(QMainWindow):
         self._ocr_worker = _OcrGridWorker(self)
         self._ocr_worker.succeeded.connect(self._on_ocr_succeeded)
         self._ocr_worker.failed.connect(self._on_ocr_failed)
+        self._ocr_words_worker = _OcrWordsWorker(self)
+        self._ocr_words_worker.succeeded.connect(self._on_ocr_words_succeeded)
+        self._ocr_words_worker.failed.connect(self._on_ocr_words_failed)
+        self._ocr_words_pending: str | None = None
+        self._ocr_words_pdf_rect: tuple[float, float, float, float] | None = None
+        self._ocr_words_origin: tuple[float, float] = (0.0, 0.0)
+        self._ocr_words_size: tuple[float, float] = (1.0, 1.0)
+        self._table_words: list[Word] | None = None
+        self._table_words_origin: tuple[float, float] = (0.0, 0.0)
+        self._table_words_size: tuple[float, float] = (1.0, 1.0)
+        self._table_words_space: str = "pdf"
 
         self._file_list = QListWidget()
         self._file_list.currentItemChanged.connect(self._on_file_selected)
 
         self._pdf_panel = PdfPanel()
-        self._pdf_panel.pdf_loaded.connect(self._resize_table)
+        self._pdf_panel.pdf_loaded.connect(self._on_pdf_loaded)
         self._pdf_panel.overlay().grid_changed.connect(self._resize_table)
         self._pdf_panel.dimensions_changed.connect(self._resize_table)
 
@@ -151,12 +220,19 @@ class MainWindow(QMainWindow):
         table_region.triggered.connect(self._table_region)
         draw_grid = layout_menu.addAction("&Draw grid")
         draw_grid.triggered.connect(self._draw_grid)
+        save_col_fracs = layout_menu.addAction("Save column &fracs")
+        save_col_fracs.triggered.connect(self._save_column_fracs)
 
         read_menu = self.menuBar().addMenu("&Read")
         line_items = read_menu.addAction("&Line items")
         line_items.triggered.connect(self._read_line_items)
         ocr_grid = read_menu.addAction("OCR &grid")
         ocr_grid.triggered.connect(self._ocr_grid)
+        read_menu.addSeparator()
+        show_rects = read_menu.addAction("Show text &rectangles")
+        show_rects.triggered.connect(self._show_text_rectangles)
+        infer_grid = read_menu.addAction("&Infer grid")
+        infer_grid.triggered.connect(self._infer_grid)
 
     def _populate_project_menu(self) -> None:
         self._project_menu.clear()
@@ -286,6 +362,10 @@ class MainWindow(QMainWindow):
             return
         self._load_batch(folder, select_name=state.pdf)
 
+    def _on_pdf_loaded(self) -> None:
+        self._table_words = None
+        self._resize_table()
+
     def _on_file_selected(self, current: QListWidgetItem | None, _previous) -> None:
         if current is None:
             self._pdf_panel.clear()
@@ -319,18 +399,252 @@ class MainWindow(QMainWindow):
                 "Draw the line-item table area first (Layout → Table region…).",
             )
             return
-        self._pdf_panel.draw_grid()
+        saved = self._project.col_fracs() if self._project is not None else None
+        if saved:
+            self._pdf_panel.draw_column_grid(saved)
+        else:
+            self._pdf_panel.draw_grid()
         self._resize_table()
 
+    def _save_column_fracs(self) -> None:
+        if self._project is None:
+            QMessageBox.information(
+                self,
+                "Save column fracs",
+                "Choose a project first (File → Project).",
+            )
+            return
+        overlay = self._pdf_panel.overlay()
+        fracs = overlay.col_fracs()
+        if len(fracs) < 2:
+            QMessageBox.information(
+                self,
+                "Save column fracs",
+                "Draw a grid first (Layout → Draw grid) and align the column lines.",
+            )
+            return
+        self._project.set_col_fracs(fracs)
+        self.statusBar().showMessage(
+            f"Saved {len(fracs) - 1} column(s) to project “{self._project.name}”.",
+            8000,
+        )
+
     def _resize_table(self) -> None:
-        rows = self._pdf_panel.num_rows()
-        cols = self._pdf_panel.num_cols()
+        overlay = self._pdf_panel.overlay()
+        row_fracs = overlay.row_fracs()
+        col_fracs = overlay.col_fracs()
+        if len(row_fracs) >= 2:
+            rows = len(row_fracs) - 1
+        elif overlay.has_region() and len(col_fracs) >= 2:
+            rows = 0
+        else:
+            rows = self._pdf_panel.num_rows()
+        cols = len(col_fracs) - 1 if len(col_fracs) >= 2 else self._pdf_panel.num_cols()
         self._table.setRowCount(rows)
         self._table.setColumnCount(cols)
         headers = [f"Col {c + 1}" for c in range(cols)]
         self._table.setHorizontalHeaderLabels(headers)
         for r in range(rows):
             self._table.setVerticalHeaderItem(r, QTableWidgetItem(str(r + 1)))
+
+    def _infer_hints(self) -> InferHints:
+        project = self._project
+        names: list[str] = []
+        header_rows = 1
+        col_fracs: list[float] | None = None
+        if project is not None:
+            names = project.column_names()
+            header_rows = project.header_row_count()
+            col_fracs = project.col_fracs()
+        if col_fracs and len(col_fracs) >= 2:
+            n_cols = len(col_fracs) - 1
+        elif names:
+            n_cols = len(names)
+        else:
+            n_cols = self._pdf_panel.num_cols()
+        return InferHints(
+            n_cols=n_cols,
+            header_row_count=header_rows,
+            col_fracs=col_fracs,
+            column_names=names,
+        )
+
+    def _apply_table_word_session(
+        self,
+        words: list[Word],
+        *,
+        origin: tuple[float, float],
+        size: tuple[float, float],
+        space: str,
+    ) -> None:
+        self._table_words = words
+        self._table_words_origin = origin
+        self._table_words_size = size
+        self._table_words_space = space
+        overlay = self._pdf_panel.overlay()
+        if space == "pdf":
+            rects = self._pdf_panel.pdf_words_to_widget_rects(words)
+        else:
+            rects = self._pdf_panel.region_words_to_widget_rects(words, origin, size)
+        overlay.set_text_rects(rects)
+        overlay.show()
+        overlay.raise_()
+        self._pdf_panel.refresh_overlay()
+
+    def _begin_ocr_words(self, purpose: str) -> None:
+        doc = self._pdf_panel.document()
+        if doc is None:
+            return
+        pdf_rect = page_pdf_rect(doc, 0)
+        try:
+            image, origin, size = region_image(doc, 0, pdf_rect)
+        except Exception as exc:
+            QMessageBox.warning(self, purpose, f"Could not render the page:\n{exc}")
+            return
+        if self._ocr_busy:
+            QMessageBox.information(self, purpose, "OCR is already running.")
+            return
+        self._ocr_busy = True
+        self._ocr_words_pending = purpose
+        self._ocr_words_pdf_rect = pdf_rect
+        dialog = QProgressDialog(
+            "Running PaddleOCR on the page.\n"
+            "The first run downloads models and can take several minutes.",
+            None,
+            0,
+            0,
+            self,
+        )
+        dialog.setWindowTitle(purpose)
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setCancelButton(None)
+        dialog.setMinimumDuration(0)
+        dialog.setMinimumWidth(420)
+        dialog.show()
+        self._ocr_progress = dialog
+        self.statusBar().showMessage("Running PaddleOCR…")
+        self._ocr_words_origin = origin
+        self._ocr_words_size = size
+        self._ocr_words_worker.submit(image)
+
+    def _show_text_rectangles(self) -> None:
+        doc = self._pdf_panel.document()
+        if doc is None:
+            QMessageBox.information(self, "Show text rectangles", "Load a PDF first.")
+            return
+        # Always OCR the full page: many scans ship a partial text layer (header
+        # only) which would hide the rest of the page if we used words_on_page.
+        self._begin_ocr_words("Show text rectangles")
+
+    def _infer_grid(self) -> None:
+        if self._pdf_panel.document() is None:
+            QMessageBox.information(self, "Infer grid", "Load a PDF first.")
+            return
+        if not self._pdf_panel.overlay().has_region():
+            QMessageBox.information(
+                self,
+                "Infer grid",
+                "Draw the line-item table area first (Layout → Table region…).",
+            )
+            return
+        if self._table_words is None:
+            QMessageBox.information(
+                self,
+                "Infer grid",
+                "Run Read → Show text rectangles first (or wait for OCR to finish).",
+            )
+            return
+        if self._table_words_space == "pdf":
+            pw, ph = self._pdf_panel.page_size_pdf()
+            pdf_rect = self._pdf_panel.table_region_pdf_rect()
+            if pdf_rect is None:
+                return
+            subset = words_in_pdf_rect(self._table_words, *pdf_rect)
+            # Convert to region-normalised pixel space using table widget bounds.
+            bounds = self._pdf_panel.overlay().region_widget_bounds()
+            if bounds is None:
+                return
+            rx0, ry0, rx1, ry1 = bounds
+            rw_px, rh_px = rx1 - rx0, ry1 - ry0
+            px0, py0, px1, py1 = pdf_rect
+            region_words: list[Word] = []
+            for w in subset:
+                wx0 = ((w.x0 - px0) / (px1 - px0)) * rw_px
+                wy0 = ((w.y0 - py0) / (py1 - py0)) * rh_px
+                wx1 = ((w.x1 - px0) / (px1 - px0)) * rw_px
+                wy1 = ((w.y1 - py0) / (py1 - py0)) * rh_px
+                region_words.append(Word(wx0, wy0, wx1, wy1, w.text))
+            origin = (0.0, 0.0)
+            size = (rw_px, rh_px)
+            words_for_infer = region_words
+        else:
+            origin = self._table_words_origin
+            size = self._table_words_size
+            words_for_infer = self._table_words
+
+        hints = self._infer_hints()
+        result = infer_from_words(words_for_infer, origin, size, hints)
+        if len(result.row_fracs) < 2 or len(result.col_fracs) < 2:
+            QMessageBox.warning(
+                self,
+                "Infer grid",
+                "Could not infer a grid from the text boxes in the table region.",
+            )
+            return
+        self._pdf_panel.set_inferred_grid(result.row_fracs, result.col_fracs)
+        self._resize_table()
+        names = hints.column_names
+        if names:
+            self._table.setHorizontalHeaderLabels(
+                names[: self._table.columnCount()]
+                + [f"Col {i + 1}" for i in range(len(names), self._table.columnCount())]
+            )
+        rows = len(result.row_fracs) - 1
+        cols = len(result.col_fracs) - 1
+        for data_index, row_data in enumerate(result.rows):
+            r = hints.header_row_count + data_index
+            if r >= rows:
+                break
+            for c in range(cols):
+                key = names[c] if c < len(names) else f"col_{c + 1}"
+                text = row_data.get(key, "")
+                self._table.setItem(r, c, QTableWidgetItem(text))
+        self.statusBar().showMessage(
+            f"Infer grid: {result.data_row_count} data rows, "
+            f"{result.header_band_count} header band(s).",
+            8000,
+        )
+
+    def _on_ocr_words_succeeded(self, words: list) -> None:
+        purpose = self._ocr_words_pending or "OCR"
+        self._ocr_words_pending = None
+        self._close_ocr_progress()
+        doc = self._pdf_panel.document()
+        pdf_rect = self._ocr_words_pdf_rect
+        self._ocr_words_pdf_rect = None
+        if doc is not None and pdf_rect is not None:
+            words = words_raster_to_pdf(words, pdf_rect, doc[0])
+        pw, ph = self._pdf_panel.page_size_pdf()
+        self._apply_table_word_session(
+            words,
+            origin=(0.0, 0.0),
+            size=(pw, ph),
+            space="pdf",
+        )
+        self.statusBar().showMessage(f"{purpose}: {len(words)} OCR boxes.", 8000)
+        if not words:
+            QMessageBox.information(
+                self,
+                purpose,
+                "OCR finished, but no text was found in the table region.",
+            )
+
+    def _on_ocr_words_failed(self, message: str) -> None:
+        purpose = self._ocr_words_pending or "OCR"
+        self._ocr_words_pending = None
+        self._close_ocr_progress()
+        self.statusBar().showMessage(f"{purpose} failed.", 8000)
+        QMessageBox.warning(self, purpose, message or "PaddleOCR failed.")
 
     def _read_line_items(self) -> None:
         doc = self._pdf_panel.document()
@@ -468,5 +782,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._ocr_worker.shutdown()
+        self._ocr_words_worker.shutdown()
         self._ocr_worker.wait()
+        self._ocr_words_worker.wait()
         super().closeEvent(event)

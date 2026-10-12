@@ -28,11 +28,13 @@ class GridOverlay(QWidget):
         self._draw_region_active = False
         self._region_anchor: tuple[float, float] | None = None
         self._region_drag: tuple[float, float] | None = None
+        self._text_rects: list[tuple[float, float, float, float]] = []
 
     def reset(self) -> None:
         self._row_fracs = []
         self._col_fracs = []
         self._grid_visible = False
+        self._text_rects = []
         self._region = None
         self._draw_region_active = False
         self._region_anchor = None
@@ -55,6 +57,12 @@ class GridOverlay(QWidget):
     def region_norm(self) -> tuple[float, float, float, float] | None:
         return self._region
 
+    def region_widget_bounds(self) -> tuple[float, float, float, float] | None:
+        rect = self._region_rect_px()
+        if rect is None:
+            return None
+        return (rect.x(), rect.y(), rect.x() + rect.width(), rect.y() + rect.height())
+
     def set_grid_dimensions(self, rows: int, cols: int) -> None:
         if rows < 1 or cols < 1:
             self._row_fracs = []
@@ -75,6 +83,34 @@ class GridOverlay(QWidget):
 
     def col_fracs(self) -> list[float]:
         return list(self._col_fracs)
+
+    def set_text_rects(self, rects: list[tuple[float, float, float, float]]) -> None:
+        """Widget-space axis-aligned rectangles around text boxes."""
+        self._text_rects = list(rects)
+        self.update()
+
+    def clear_text_rects(self) -> None:
+        self._text_rects = []
+        self.update()
+
+    def has_text_rects(self) -> bool:
+        return bool(self._text_rects)
+
+    def set_row_fracs(self, fracs: list[float]) -> None:
+        if len(fracs) < 2:
+            self._row_fracs = []
+        else:
+            self._row_fracs = list(fracs)
+        self.update()
+        self.grid_changed.emit()
+
+    def set_col_fracs(self, fracs: list[float]) -> None:
+        if len(fracs) < 2:
+            self._col_fracs = []
+        else:
+            self._col_fracs = list(fracs)
+        self.update()
+        self.grid_changed.emit()
 
     def _region_rect_px(self) -> QRectF | None:
         if self._region is None:
@@ -119,7 +155,16 @@ class GridOverlay(QWidget):
         if region is not None:
             painter.drawRect(region)
 
-        if not self._grid_visible or region is None or not self._row_fracs or not self._col_fracs:
+        if self._text_rects:
+            text_pen = QPen(Qt.GlobalColor.red, 3, Qt.PenStyle.SolidLine)
+            painter.setPen(text_pen)
+            painter.setBrush(QBrush(Qt.GlobalColor.transparent))
+            for x0, y0, x1, y1 in self._text_rects:
+                painter.drawRect(QRectF(x0, y0, x1 - x0, y1 - y0))
+
+        if not self._grid_visible or region is None:
+            return
+        if not self._row_fracs and not self._col_fracs:
             return
 
         grid_pen = QPen(Qt.GlobalColor.red, 2, Qt.PenStyle.DashLine)

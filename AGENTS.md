@@ -14,7 +14,9 @@ Batch-process supplier invoices (PDF, often OCR’d) into structured line items.
 - **File → Load batch** — list `*.pdf` from a subdirectory of the project's `data-directory` (a *batch*)
 - Last project/batch/PDF persist per user via `platformdirs` (`AppState` in `projects.py`, `app_config.json` under the OS config dir — not in `CONFIG_DIRECTORY`); restored at startup, saved on every selection change
 - **Layout → Table region…** — rubber-band rectangle (normalized coords on preview)
-- **Layout → Draw grid** — cell grid inside region only; user drags internal lines
+- **Layout → Draw grid** — cell grid inside region only; user drags internal lines. If the project has saved **`col-fracs`**, only vertical dividers are drawn (no rows yet).
+- **Layout → Save column fracs** — writes overlay `col_fracs` to `project_config.json` (`col-fracs` key).
+- **Read → Infer grid** — OCR/text boxes in the table region; with saved `col-fracs`, columns are fixed and only rows are inferred (`grid_infer.py`).
 - Centre panel fits page to available area (`PdfPanel._apply_fit`)
 - **Read → Line items** — map cells to PDF coordinates; fill table from `get_text("words")` via PyMuPDF
 - **Read → OCR grid** — rasterise the table region and fill the same table with PaddleOCR (`pdf_ocr.py`). Use this when the page has no text layer. One OCR pass; line boxes are assigned to cells by centre, same idea as line items
