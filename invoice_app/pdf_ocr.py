@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import threading
+from dataclasses import dataclass
 
 import pymupdf as fitz
 
@@ -67,6 +68,23 @@ def _clip_and_zoom(
     return clip, zoom
 
 
+@dataclass(frozen=True)
+class OcrLine:
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+    text: str
+    score: float
+    poly: tuple[tuple[float, float], ...] | None = None
+
+
+def _point_raster_to_pdf(
+    x: float, y: float, clip: fitz.Rect, zoom: float
+) -> tuple[float, float]:
+    return (clip.x0 + x / zoom, clip.y0 + y / zoom)
+
+
 def words_raster_to_pdf(
     words: list[Word],
     pdf_rect: tuple[float, float, float, float],
@@ -83,6 +101,32 @@ def words_raster_to_pdf(
                 clip.x0 + w.x1 / zoom,
                 clip.y0 + w.y1 / zoom,
                 w.text,
+            )
+        )
+    return converted
+
+
+def lines_raster_to_pdf(
+    lines: list[OcrLine],
+    pdf_rect: tuple[float, float, float, float],
+    page: fitz.Page,
+) -> list[OcrLine]:
+    """Map OCR lines (and optional quads) from pixmap pixels into PDF user space."""
+    clip, zoom = _clip_and_zoom(page, pdf_rect)
+    converted: list[OcrLine] = []
+    for line in lines:
+        poly_pdf: tuple[tuple[float, float], ...] | None = None
+        if line.poly:
+            poly_pdf = tuple(_point_raster_to_pdf(px, py, clip, zoom) for px, py in line.poly)
+        converted.append(
+            OcrLine(
+                clip.x0 + line.x0 / zoom,
+                clip.y0 + line.y0 / zoom,
+                clip.x0 + line.x1 / zoom,
+                clip.y0 + line.y1 / zoom,
+                line.text,
+                line.score,
+                poly_pdf,
             )
         )
     return converted
@@ -148,34 +192,76 @@ def _result_field(result, key: str):
         raise
 
 
-def _lines_from_result(result) -> list[Word]:
+def _poly_from_box(box) -> tuple[tuple[float, float], ...] | None:
+    if box is None:
+        return None
+    try:
+        points = list(box)
+    except TypeError:
+        return None
+    if len(points) >= 4 and not isinstance(points[0], (int, float)):
+        out: list[tuple[float, float]] = []
+        for pt in points[:4]:
+            out.append((float(pt[0]), float(pt[1])))
+        return tuple(out)
+    if len(points) >= 4:
+        x0, y0, x1, y1 = (float(v) for v in points[:4])
+        return ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
+    return None
+
+
+def _optional_polys(result):
+    for key in ("rec_polys", "dt_polys"):
+        try:
+            value = _result_field(result, key)
+        except Exception:
+            continue
+        if value is not None:
+            return value
+    return None
+
+
+def _lines_from_result(result) -> list[OcrLine]:
     texts = _result_field(result, "rec_texts")
     scores = _result_field(result, "rec_scores")
     boxes = _result_field(result, "rec_boxes")
-    words: list[Word] = []
-    for text, score, box in zip(texts, scores, boxes):
+    polys = _optional_polys(result)
+    lines: list[OcrLine] = []
+    for index, (text, score, box) in enumerate(zip(texts, scores, boxes)):
         cleaned = str(text).strip()
         if not cleaned or float(score) < _MIN_SCORE:
             continue
         x0, y0, x1, y1 = (float(value) for value in box)
-        words.append(Word(x0, y0, x1, y1, cleaned))
-    return words
+        poly = None
+        if polys is not None and index < len(polys):
+            poly = _poly_from_box(polys[index])
+        if poly is None:
+            poly = _poly_from_box(box)
+        lines.append(OcrLine(x0, y0, x1, y1, cleaned, float(score), poly))
+    return lines
 
 
-def ocr_image(image) -> list[Word]:
+def ocr_image_detailed(image) -> list[OcrLine]:
     """Run PaddleOCR on an RGB uint8 image. Boxes are in image pixels."""
     import numpy as np
 
     rgb = np.ascontiguousarray(image)
     if rgb.ndim != 3 or rgb.shape[2] != 3:
         raise ValueError(f"Expected an RGB image, got shape {getattr(rgb, 'shape', None)}.")
-    # PaddleOCR numpy input follows OpenCV's BGR channel order.
     bgr = np.ascontiguousarray(rgb[:, :, ::-1])
     results = _ocr_engine().predict(bgr)
-    words: list[Word] = []
+    lines: list[OcrLine] = []
     for result in results:
-        words.extend(_lines_from_result(result))
-    return words
+        lines.extend(_lines_from_result(result))
+    return lines
+
+
+def ocr_image(image) -> list[Word]:
+    """Run PaddleOCR on an RGB uint8 image. Boxes are in image pixels."""
+    return [
+        Word(line.x0, line.y0, line.x1, line.y1, line.text)
+        for line in ocr_image_detailed(image)
+    ]
 
 
 def assign_to_grid(

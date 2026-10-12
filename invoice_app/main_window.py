@@ -5,6 +5,7 @@ from __future__ import annotations
 import traceback
 from pathlib import Path
 
+import pymupdf as fitz
 from PyQt6.QtCore import QMutex, Qt, QThread, QWaitCondition, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
@@ -23,6 +24,7 @@ from PyQt6.QtWidgets import (
 )
 
 from invoice_app.grid_infer import InferHints, infer_from_words
+from invoice_app.ocr_cache import load_cache, load_page_words, ocr_document_pages, write_cache
 from invoice_app.pdf_ocr import (
     ocr_image,
     page_pdf_rect,
@@ -145,6 +147,73 @@ class _OcrGridWorker(QThread):
                 return
 
 
+class _OcrBatchWorker(QThread):
+    """OCR every page of each PDF in a batch; write ``<stem>.ocr.json`` beside each file."""
+
+    progress = pyqtSignal(int, int, str)
+    document_done = pyqtSignal(str, bool, str)
+    finished_batch = pyqtSignal(int, int, int)
+    failed = pyqtSignal(str)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._mutex = QMutex()
+        self._pdfs: list[Path] = []
+        self._stop = False
+
+    def submit(self, pdfs: list[Path]) -> None:
+        self._mutex.lock()
+        self._pdfs = list(pdfs)
+        self._stop = False
+        self._mutex.unlock()
+        if not self.isRunning():
+            self.start()
+
+    def cancel(self) -> None:
+        self._mutex.lock()
+        self._stop = True
+        self._mutex.unlock()
+
+    def run(self) -> None:
+        self._mutex.lock()
+        pdfs = self._pdfs
+        self._pdfs = []
+        self._mutex.unlock()
+        if not pdfs:
+            return
+        ocr_count = 0
+        skip_count = 0
+        fail_count = 0
+        total = len(pdfs)
+        try:
+            for index, pdf_path in enumerate(pdfs):
+                self._mutex.lock()
+                stop = self._stop
+                self._mutex.unlock()
+                if stop:
+                    break
+                label = pdf_path.name
+                self.progress.emit(index, total, label)
+                if load_cache(pdf_path) is not None:
+                    skip_count += 1
+                    self.document_done.emit(label, True, "skipped (cache up to date)")
+                    continue
+                try:
+                    with fitz.open(pdf_path) as doc:
+                        pages = ocr_document_pages(doc)
+                    write_cache(pdf_path, pages)
+                    ocr_count += 1
+                    self.document_done.emit(label, True, f"{len(pages)} page(s)")
+                except Exception as exc:
+                    traceback.print_exc()
+                    fail_count += 1
+                    self.document_done.emit(label, False, str(exc))
+            self.finished_batch.emit(ocr_count, skip_count, fail_count)
+        except Exception as exc:
+            traceback.print_exc()
+            self.failed.emit(str(exc))
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -162,6 +231,11 @@ class MainWindow(QMainWindow):
         self._ocr_words_worker = _OcrWordsWorker(self)
         self._ocr_words_worker.succeeded.connect(self._on_ocr_words_succeeded)
         self._ocr_words_worker.failed.connect(self._on_ocr_words_failed)
+        self._ocr_batch_worker = _OcrBatchWorker(self)
+        self._ocr_batch_worker.progress.connect(self._on_ocr_batch_progress)
+        self._ocr_batch_worker.finished_batch.connect(self._on_ocr_batch_finished)
+        self._ocr_batch_worker.failed.connect(self._on_ocr_batch_failed)
+        self._ocr_batch_mode = False
         self._ocr_words_pending: str | None = None
         self._ocr_words_pdf_rect: tuple[float, float, float, float] | None = None
         self._ocr_words_origin: tuple[float, float] = (0.0, 0.0)
@@ -228,6 +302,8 @@ class MainWindow(QMainWindow):
         line_items.triggered.connect(self._read_line_items)
         ocr_grid = read_menu.addAction("OCR &grid")
         ocr_grid.triggered.connect(self._ocr_grid)
+        ocr_batch = read_menu.addAction("OCR &batch")
+        ocr_batch.triggered.connect(self._ocr_batch)
         read_menu.addSeparator()
         show_rects = read_menu.addAction("Show text &rectangles")
         show_rects.triggered.connect(self._show_text_rectangles)
@@ -469,6 +545,21 @@ class MainWindow(QMainWindow):
             column_names=names,
         )
 
+    def _current_pdf_path(self) -> Path | None:
+        item = self._file_list.currentItem()
+        if item is None:
+            return None
+        return Path(item.data(Qt.ItemDataRole.UserRole))
+
+    def _batch_pdf_paths(self) -> list[Path]:
+        paths: list[Path] = []
+        for i in range(self._file_list.count()):
+            item = self._file_list.item(i)
+            if item is None:
+                continue
+            paths.append(Path(item.data(Qt.ItemDataRole.UserRole)))
+        return paths
+
     def _apply_table_word_session(
         self,
         words: list[Word],
@@ -501,7 +592,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, purpose, f"Could not render the page:\n{exc}")
             return
-        if self._ocr_busy:
+        if self._ocr_busy or self._ocr_batch_mode:
             QMessageBox.information(self, purpose, "OCR is already running.")
             return
         self._ocr_busy = True
@@ -532,9 +623,100 @@ class MainWindow(QMainWindow):
         if doc is None:
             QMessageBox.information(self, "Show text rectangles", "Load a PDF first.")
             return
+        pdf_path = self._current_pdf_path()
+        if pdf_path is not None:
+            cached = load_page_words(pdf_path, 0)
+            if cached is not None:
+                pw, ph = self._pdf_panel.page_size_pdf()
+                self._apply_table_word_session(
+                    cached,
+                    origin=(0.0, 0.0),
+                    size=(pw, ph),
+                    space="pdf",
+                )
+                self.statusBar().showMessage(
+                    f"Show text rectangles: {len(cached)} boxes (from {pdf_path.stem}.ocr.json).",
+                    8000,
+                )
+                return
         # Always OCR the full page: many scans ship a partial text layer (header
         # only) which would hide the rest of the page if we used words_on_page.
         self._begin_ocr_words("Show text rectangles")
+
+    def _ocr_batch(self) -> None:
+        if self._folder is None or self._file_list.count() == 0:
+            QMessageBox.information(
+                self,
+                "OCR batch",
+                "Load a batch first (File → Load batch).",
+            )
+            return
+        if self._ocr_busy or self._ocr_batch_mode:
+            QMessageBox.information(self, "OCR batch", "OCR is already running.")
+            return
+        pdfs = self._batch_pdf_paths()
+        self._ocr_batch_mode = True
+        dialog = QProgressDialog(
+            "Running PaddleOCR on every page of every PDF in the batch.\n"
+            "The first run downloads models and can take a long time.\n"
+            "Up-to-date sidecars are skipped.",
+            "Cancel",
+            0,
+            len(pdfs),
+            self,
+        )
+        dialog.setWindowTitle("OCR batch")
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setMinimumDuration(0)
+        dialog.setMinimumWidth(480)
+        dialog.canceled.connect(self._ocr_batch_worker.cancel)
+        dialog.show()
+        self._ocr_progress = dialog
+        self.statusBar().showMessage("OCR batch: starting…")
+        self._ocr_batch_worker.submit(pdfs)
+
+    def _on_ocr_batch_progress(self, index: int, total: int, name: str) -> None:
+        dialog = self._ocr_progress
+        if dialog is not None:
+            dialog.setValue(index)
+            dialog.setLabelText(
+                f"Processing ({index + 1} of {total}):\n{name}\n\n"
+                "Up-to-date .ocr.json files are skipped."
+            )
+        self.statusBar().showMessage(f"OCR batch: {name} ({index + 1}/{total})")
+
+    def _on_ocr_batch_finished(self, ocr_count: int, skip_count: int, fail_count: int) -> None:
+        self._ocr_batch_mode = False
+        dialog = self._ocr_progress
+        self._ocr_progress = None
+        if dialog is not None:
+            dialog.setValue(dialog.maximum())
+            dialog.close()
+        summary = (
+            f"OCR batch finished: {ocr_count} OCR'd, {skip_count} skipped, {fail_count} failed."
+        )
+        self.statusBar().showMessage(summary, 12000)
+        if fail_count:
+            QMessageBox.warning(self, "OCR batch", summary)
+        else:
+            QMessageBox.information(self, "OCR batch", summary)
+        pdf_path = self._current_pdf_path()
+        if pdf_path is not None and load_cache(pdf_path) is not None:
+            cached = load_page_words(pdf_path, 0)
+            if cached is not None:
+                pw, ph = self._pdf_panel.page_size_pdf()
+                self._apply_table_word_session(
+                    cached,
+                    origin=(0.0, 0.0),
+                    size=(pw, ph),
+                    space="pdf",
+                )
+
+    def _on_ocr_batch_failed(self, message: str) -> None:
+        self._ocr_batch_mode = False
+        self._close_ocr_progress()
+        self.statusBar().showMessage("OCR batch failed.", 8000)
+        QMessageBox.warning(self, "OCR batch", message or "OCR batch failed.")
 
     def _infer_grid(self) -> None:
         if self._pdf_panel.document() is None:
@@ -682,7 +864,8 @@ class MainWindow(QMainWindow):
                 self._table.setItem(r, c, QTableWidgetItem(text))
 
     def _ocr_grid(self) -> None:
-        if self._ocr_busy:
+        if self._ocr_busy or self._ocr_batch_mode:
+            QMessageBox.information(self, "OCR grid", "OCR is already running.")
             return
         doc = self._pdf_panel.document()
         if doc is None:
@@ -781,8 +964,10 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, "OCR grid", message or "PaddleOCR failed.")
 
     def closeEvent(self, event) -> None:
+        self._ocr_batch_worker.cancel()
         self._ocr_worker.shutdown()
         self._ocr_words_worker.shutdown()
+        self._ocr_batch_worker.wait(5000)
         self._ocr_worker.wait()
         self._ocr_words_worker.wait()
         super().closeEvent(event)
