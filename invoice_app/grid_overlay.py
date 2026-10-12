@@ -156,7 +156,8 @@ class GridOverlay(QWidget):
             painter.drawRect(region)
 
         if self._text_rects:
-            text_pen = QPen(Qt.GlobalColor.red, 3, Qt.PenStyle.SolidLine)
+            text_pen = QPen(Qt.GlobalColor.green, 3, Qt.PenStyle.DotLine)
+            text_pen.setCosmetic(True)
             painter.setPen(text_pen)
             painter.setBrush(QBrush(Qt.GlobalColor.transparent))
             for x0, y0, x1, y1 in self._text_rects:

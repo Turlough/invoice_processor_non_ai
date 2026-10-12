@@ -87,6 +87,9 @@ class PdfPanel(QWidget):
     def document(self) -> fitz.Document | None:
         return self._doc
 
+    def page_index(self) -> int:
+        return self._page_index
+
     def page_size_pdf(self) -> tuple[float, float]:
         return self._page_size
 

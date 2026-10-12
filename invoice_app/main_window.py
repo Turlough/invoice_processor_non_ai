@@ -439,7 +439,7 @@ class MainWindow(QMainWindow):
         self._load_batch(folder, select_name=state.pdf)
 
     def _on_pdf_loaded(self) -> None:
-        self._table_words = None
+        self._apply_cached_ocr_for_current_page()
         self._resize_table()
 
     def _on_file_selected(self, current: QListWidgetItem | None, _previous) -> None:
@@ -560,6 +560,28 @@ class MainWindow(QMainWindow):
             paths.append(Path(item.data(Qt.ItemDataRole.UserRole)))
         return paths
 
+    def _apply_cached_ocr_for_current_page(self) -> bool:
+        """Draw OCR boxes from ``<stem>.ocr.json`` when the sidecar is valid."""
+        pdf_path = self._current_pdf_path()
+        if pdf_path is None or self._pdf_panel.document() is None:
+            self._table_words = None
+            return False
+        page_index = self._pdf_panel.page_index()
+        cached = load_page_words(pdf_path, page_index)
+        if cached is None:
+            self._table_words = None
+            self._pdf_panel.overlay().clear_text_rects()
+            self._pdf_panel.refresh_overlay()
+            return False
+        pw, ph = self._pdf_panel.page_size_pdf()
+        self._apply_table_word_session(
+            cached,
+            origin=(0.0, 0.0),
+            size=(pw, ph),
+            space="pdf",
+        )
+        return True
+
     def _apply_table_word_session(
         self,
         words: list[Word],
@@ -624,21 +646,13 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Show text rectangles", "Load a PDF first.")
             return
         pdf_path = self._current_pdf_path()
-        if pdf_path is not None:
-            cached = load_page_words(pdf_path, 0)
-            if cached is not None:
-                pw, ph = self._pdf_panel.page_size_pdf()
-                self._apply_table_word_session(
-                    cached,
-                    origin=(0.0, 0.0),
-                    size=(pw, ph),
-                    space="pdf",
-                )
-                self.statusBar().showMessage(
-                    f"Show text rectangles: {len(cached)} boxes (from {pdf_path.stem}.ocr.json).",
-                    8000,
-                )
-                return
+        if pdf_path is not None and self._apply_cached_ocr_for_current_page():
+            count = len(self._table_words or [])
+            self.statusBar().showMessage(
+                f"Show text rectangles: {count} boxes (from {pdf_path.stem}.ocr.json).",
+                8000,
+            )
+            return
         # Always OCR the full page: many scans ship a partial text layer (header
         # only) which would hide the rest of the page if we used words_on_page.
         self._begin_ocr_words("Show text rectangles")
@@ -700,17 +714,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "OCR batch", summary)
         else:
             QMessageBox.information(self, "OCR batch", summary)
-        pdf_path = self._current_pdf_path()
-        if pdf_path is not None and load_cache(pdf_path) is not None:
-            cached = load_page_words(pdf_path, 0)
-            if cached is not None:
-                pw, ph = self._pdf_panel.page_size_pdf()
-                self._apply_table_word_session(
-                    cached,
-                    origin=(0.0, 0.0),
-                    size=(pw, ph),
-                    space="pdf",
-                )
+        self._apply_cached_ocr_for_current_page()
 
     def _on_ocr_batch_failed(self, message: str) -> None:
         self._ocr_batch_mode = False
