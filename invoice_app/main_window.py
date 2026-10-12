@@ -346,14 +346,31 @@ class MainWindow(QMainWindow):
             if not directory:
                 return
             project.set_data_directory(Path(directory))
+        changing = self._project is None or self._project.name != project.name
         self._project = project
         self._state.project = project.name
-        self._state.batch = None
-        self._state.pdf = None
-        self._save_state()
+        if changing:
+            self._close_batch()
+        else:
+            self._save_state()
         self.statusBar().showMessage(
             f"Project: {name} — data directory: {project.data_directory}", 8000
         )
+
+    def _close_batch(self) -> None:
+        """Drop the open batch and clear the file list, preview, and table."""
+        self._folder = None
+        self._table_words = None
+        self._file_list.blockSignals(True)
+        self._file_list.clear()
+        self._file_list.blockSignals(False)
+        self._pdf_panel.clear()
+        self._table.clear()
+        self._table.setRowCount(0)
+        self._table.setColumnCount(0)
+        self._state.batch = None
+        self._state.pdf = None
+        self._save_state()
 
     def _populate_batch_menu(self) -> None:
         self._batch_menu.clear()
