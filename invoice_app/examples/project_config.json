@@ -1,0 +1,21 @@
+{
+    "data-directory": "/path/to/data/directory",
+    "row-height": "height of the rows in pixels",
+    "columns": [
+        {
+            "name": "column name",
+            "type": "column type(integer, float, string, date, time, datetime, boolean)",
+            "y-location": "y-location on the page "
+        },
+        {
+            "name": "column name",
+            "type": "column type(integer, float, string, date, time, datetime, boolean)",
+            "y-location": "y-location on the page "
+        },
+        {
+            "name": "column name",
+            "type": "column type(integer, float, string, date, time, datetime, boolean)",
+            "y-location": "y-location on the page "
+        }
+    ]
+ }

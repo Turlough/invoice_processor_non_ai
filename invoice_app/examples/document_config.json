@@ -1,0 +1,14 @@
+{
+    "line-items": [
+        {
+            "page": "page number, starting from 0",
+            "cell-rectangle": ["x", "y", "width", "height"],
+            "values": [
+                {
+                    "key": "key of the value",
+                    "value": "value of the key"
+                }
+            ]
+        }
+    ]
+}
