@@ -19,12 +19,12 @@ Limitations to be aware of:
 Three panels (horizontal splitter):
 
 1. **Left** — PDF filenames from the batch chosen via **File → Project** (pick a project) then **File → Load batch** (pick a batch folder)
-2. **Centre** — Current PDF page with **Rows** / **Cols** spin boxes; red dashed grid after **Layout → Draw grid**
+2. **Centre** — Current PDF page with page navigation (◀ ▶, page spin box), zoom controls, and **Rows** / **Cols** spin boxes; red dashed grid after **Layout → Draw grid**
 3. **Right** — `QTableWidget` with the same row/column count as the grid
 
 ### Grid interaction
 
-- The PDF page **scales to fit** the centre panel (resizes with the splitter).
+- The PDF page **scales to fit** the centre panel by default (**Auto**). Zoom controls — **Auto**, **Height**, **Width**, **−**, **+** — switch between fit modes and manual zoom; scroll bars appear when the page overflows. Page controls (◀ ▶ or the spin box) move through multi-page documents; the grid carries over between pages.
 - Set **Rows** and **Cols** to match the line-item table on the invoice.
 - **Layout → Table region…** — click and drag on the page to outline the table.
 - **Layout → Draw grid** creates evenly spaced dividers inside the region.
@@ -85,7 +85,6 @@ AGENTS.md               # Guidance for AI agents (DOX)
 
 ## Roadmap (not implemented yet)
 
-- Multi-page invoices and page selector
 - Per-supplier layout templates (save grid fractions and column semantics)
 - Header/metadata extraction
 - Export (CSV/Excel)

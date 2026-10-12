@@ -237,6 +237,7 @@ class MainWindow(QMainWindow):
         self._ocr_batch_worker.failed.connect(self._on_ocr_batch_failed)
         self._ocr_batch_mode = False
         self._ocr_words_pending: str | None = None
+        self._ocr_words_page = 0
         self._ocr_words_pdf_rect: tuple[float, float, float, float] | None = None
         self._ocr_words_origin: tuple[float, float] = (0.0, 0.0)
         self._ocr_words_size: tuple[float, float] = (1.0, 1.0)
@@ -250,6 +251,7 @@ class MainWindow(QMainWindow):
 
         self._pdf_panel = PdfPanel()
         self._pdf_panel.pdf_loaded.connect(self._on_pdf_loaded)
+        self._pdf_panel.page_changed.connect(self._on_pdf_page_changed)
         self._pdf_panel.overlay().grid_changed.connect(self._resize_table)
         self._pdf_panel.dimensions_changed.connect(self._resize_table)
 
@@ -459,6 +461,9 @@ class MainWindow(QMainWindow):
         self._apply_cached_ocr_for_current_page()
         self._resize_table()
 
+    def _on_pdf_page_changed(self) -> None:
+        self._apply_cached_ocr_for_current_page()
+
     def _on_file_selected(self, current: QListWidgetItem | None, _previous) -> None:
         if current is None:
             self._pdf_panel.clear()
@@ -625,9 +630,10 @@ class MainWindow(QMainWindow):
         doc = self._pdf_panel.document()
         if doc is None:
             return
-        pdf_rect = page_pdf_rect(doc, 0)
+        page_index = self._pdf_panel.page_index()
+        pdf_rect = page_pdf_rect(doc, page_index)
         try:
-            image, origin, size = region_image(doc, 0, pdf_rect)
+            image, origin, size = region_image(doc, page_index, pdf_rect)
         except Exception as exc:
             QMessageBox.warning(self, purpose, f"Could not render the page:\n{exc}")
             return
@@ -636,6 +642,7 @@ class MainWindow(QMainWindow):
             return
         self._ocr_busy = True
         self._ocr_words_pending = purpose
+        self._ocr_words_page = page_index
         self._ocr_words_pdf_rect = pdf_rect
         dialog = QProgressDialog(
             "Running PaddleOCR on the page.\n"
@@ -826,7 +833,7 @@ class MainWindow(QMainWindow):
         pdf_rect = self._ocr_words_pdf_rect
         self._ocr_words_pdf_rect = None
         if doc is not None and pdf_rect is not None:
-            words = words_raster_to_pdf(words, pdf_rect, doc[0])
+            words = words_raster_to_pdf(words, pdf_rect, doc[self._ocr_words_page])
         pw, ph = self._pdf_panel.page_size_pdf()
         self._apply_table_word_session(
             words,
@@ -863,7 +870,7 @@ class MainWindow(QMainWindow):
             )
             return
 
-        words = words_on_page(doc, 0)
+        words = words_on_page(doc, self._pdf_panel.page_index())
         if not words:
             QMessageBox.warning(
                 self,
@@ -907,7 +914,7 @@ class MainWindow(QMainWindow):
         _, _, x1, y1 = overlay.cell_widget_rect(rows - 1, cols - 1)
         pdf_rect = self._pdf_panel.widget_to_pdf_rect(x0, y0, x1, y1)
         try:
-            image, origin, size = region_image(doc, 0, pdf_rect)
+            image, origin, size = region_image(doc, self._pdf_panel.page_index(), pdf_rect)
         except Exception as exc:
             QMessageBox.warning(
                 self,

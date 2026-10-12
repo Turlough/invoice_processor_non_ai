@@ -8,9 +8,12 @@ import pymupdf as fitz
 from PyQt6.QtCore import Qt, pyqtSignal, QEvent
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QLabel,
+    QScrollArea,
     QSpinBox,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -31,6 +34,7 @@ class _FitArea(QWidget):
 
 class PdfPanel(QWidget):
     pdf_loaded = pyqtSignal()
+    page_changed = pyqtSignal()
     dimensions_changed = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -40,6 +44,44 @@ class PdfPanel(QWidget):
         self._page_size: tuple[float, float] = (1.0, 1.0)
         self._render_scale = 2.0
         self._source_pixmap: QPixmap | None = None
+        self._zoom_mode = "auto"  # "auto" | "height" | "width" | "manual"
+        self._zoom_factor = 1.0  # pixmap-pixel scale, used in "manual" mode
+
+        self._page_prev = QToolButton()
+        self._page_prev.setArrowType(Qt.ArrowType.LeftArrow)
+        self._page_prev.setToolTip("Previous page")
+        self._page_next = QToolButton()
+        self._page_next.setArrowType(Qt.ArrowType.RightArrow)
+        self._page_next.setToolTip("Next page")
+        self._page_spin = QSpinBox()
+        self._page_spin.setPrefix("Page ")
+        self._page_spin.setRange(0, 0)
+
+        self._zoom_auto = self._zoom_button("Auto", "Fit the whole page")
+        self._zoom_height = self._zoom_button("Height", "Fit the page height")
+        self._zoom_width = self._zoom_button("Width", "Fit the page width")
+        self._zoom_out = QToolButton()
+        self._zoom_out.setText("−")
+        self._zoom_out.setToolTip("Zoom out")
+        self._zoom_in = QToolButton()
+        self._zoom_in.setText("+")
+        self._zoom_in.setToolTip("Zoom in")
+        self._update_zoom_buttons()
+
+        nav = QHBoxLayout()
+        nav.addWidget(self._page_prev)
+        nav.addWidget(self._page_spin)
+        nav.addWidget(self._page_next)
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.VLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        nav.addWidget(sep)
+        nav.addWidget(self._zoom_auto)
+        nav.addWidget(self._zoom_height)
+        nav.addWidget(self._zoom_width)
+        nav.addWidget(self._zoom_out)
+        nav.addWidget(self._zoom_in)
+        nav.addStretch()
 
         self._rows_spin = QSpinBox()
         self._rows_spin.setRange(1, 100)
@@ -58,7 +100,12 @@ class PdfPanel(QWidget):
 
         self._fit_area = _FitArea()
         self._fit_area.setMinimumSize(200, 200)
-        self._fit_area.resized.connect(self._apply_fit)
+
+        self._scroll = QScrollArea(self)
+        self._scroll.setWidget(self._fit_area)
+        self._scroll.setWidgetResizable(False)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.viewport().installEventFilter(self)
 
         self._image_label = QLabel(self._fit_area)
         self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -68,11 +115,29 @@ class PdfPanel(QWidget):
         self._overlay.hide()
 
         layout = QVBoxLayout(self)
+        layout.addLayout(nav)
         layout.addLayout(controls)
-        layout.addWidget(self._fit_area, stretch=1)
+        layout.addWidget(self._scroll, stretch=1)
 
         self._rows_spin.valueChanged.connect(self._on_dimensions_changed)
         self._cols_spin.valueChanged.connect(self._on_dimensions_changed)
+        self._page_prev.clicked.connect(lambda: self.set_page(self._page_index - 1))
+        self._page_next.clicked.connect(lambda: self.set_page(self._page_index + 1))
+        self._page_spin.valueChanged.connect(lambda value: self.set_page(value - 1))
+        self._zoom_auto.clicked.connect(lambda: self._set_zoom_mode("auto"))
+        self._zoom_height.clicked.connect(lambda: self._set_zoom_mode("height"))
+        self._zoom_width.clicked.connect(lambda: self._set_zoom_mode("width"))
+        self._zoom_out.clicked.connect(lambda: self._zoom_step(1 / 1.25))
+        self._zoom_in.clicked.connect(lambda: self._zoom_step(1.25))
+        self._update_page_controls()
+
+    @staticmethod
+    def _zoom_button(text: str, tooltip: str) -> QToolButton:
+        button = QToolButton()
+        button.setText(text)
+        button.setCheckable(True)
+        button.setToolTip(tooltip)
+        return button
 
     @property
     def image_label(self) -> QLabel:
@@ -90,6 +155,21 @@ class PdfPanel(QWidget):
     def page_index(self) -> int:
         return self._page_index
 
+    def page_count(self) -> int:
+        return self._doc.page_count if self._doc is not None else 0
+
+    def set_page(self, index: int) -> None:
+        """Show the 0-based page, clamped to the document."""
+        if self._doc is None:
+            return
+        index = max(0, min(index, self._doc.page_count - 1))
+        if index == self._page_index:
+            return
+        self._page_index = index
+        self._render_page()
+        self._update_page_controls()
+        self.page_changed.emit()
+
     def page_size_pdf(self) -> tuple[float, float]:
         return self._page_size
 
@@ -102,17 +182,22 @@ class PdfPanel(QWidget):
         self._doc = fitz.open(path)
         self._page_index = 0
         self._overlay.reset()
+        self._zoom_mode = "auto"
+        self._update_zoom_buttons()
         self._render_page()
+        self._update_page_controls()
         self.pdf_loaded.emit()
 
     def clear(self) -> None:
         if self._doc is not None:
             self._doc.close()
             self._doc = None
+        self._page_index = 0
         self._source_pixmap = None
         self._image_label.clear()
         self._overlay.reset()
         self._overlay.hide()
+        self._update_page_controls()
 
     def begin_table_region(self) -> None:
         if self._doc is None:
@@ -145,6 +230,63 @@ class PdfPanel(QWidget):
             self._sync_overlay_geometry()
         self.dimensions_changed.emit()
 
+    def _update_page_controls(self) -> None:
+        count = self.page_count()
+        self._page_spin.blockSignals(True)
+        if count:
+            self._page_spin.setRange(1, count)
+            self._page_spin.setValue(self._page_index + 1)
+            self._page_spin.setSuffix(f" / {count}")
+        else:
+            self._page_spin.setRange(0, 0)
+            self._page_spin.setSuffix("")
+        self._page_spin.blockSignals(False)
+        self._page_spin.setEnabled(count > 1)
+        self._page_prev.setEnabled(count > 1 and self._page_index > 0)
+        self._page_next.setEnabled(count > 1 and self._page_index < count - 1)
+
+    def _set_zoom_mode(self, mode: str) -> None:
+        self._zoom_mode = mode
+        self._update_zoom_buttons()
+        self._apply_fit()
+
+    def _update_zoom_buttons(self) -> None:
+        for button, mode in (
+            (self._zoom_auto, "auto"),
+            (self._zoom_height, "height"),
+            (self._zoom_width, "width"),
+        ):
+            button.blockSignals(True)
+            button.setChecked(self._zoom_mode == mode)
+            button.blockSignals(False)
+
+    def _zoom_step(self, factor: float) -> None:
+        if self._source_pixmap is None or self._source_pixmap.isNull():
+            return
+        if self._zoom_mode != "manual":
+            # Continue from the scale the page is currently shown at.
+            vw = max(self._scroll.viewport().width(), 1)
+            vh = max(self._scroll.viewport().height(), 1)
+            self._zoom_factor = self._current_scale(
+                vw,
+                vh,
+                self._source_pixmap.width(),
+                self._source_pixmap.height(),
+            )
+            self._zoom_mode = "manual"
+        self._zoom_factor = min(8.0, max(0.05, self._zoom_factor * factor))
+        self._update_zoom_buttons()
+        self._apply_fit()
+
+    def _current_scale(self, vw: int, vh: int, pw: int, ph: int) -> float:
+        if self._zoom_mode == "width":
+            return vw / pw
+        if self._zoom_mode == "height":
+            return vh / ph
+        if self._zoom_mode == "manual":
+            return self._zoom_factor
+        return min(vw / pw, vh / ph)
+
     def _render_page(self) -> None:
         if self._doc is None:
             return
@@ -160,11 +302,11 @@ class PdfPanel(QWidget):
     def _apply_fit(self) -> None:
         if self._source_pixmap is None or self._source_pixmap.isNull():
             return
-        area_w = max(self._fit_area.width(), 1)
-        area_h = max(self._fit_area.height(), 1)
+        vw = max(self._scroll.viewport().width(), 1)
+        vh = max(self._scroll.viewport().height(), 1)
         pw = self._source_pixmap.width()
         ph = self._source_pixmap.height()
-        scale = min(area_w / pw, area_h / ph)
+        scale = self._current_scale(vw, vh, pw, ph)
         dw = max(1, int(pw * scale))
         dh = max(1, int(ph * scale))
         scaled = self._source_pixmap.scaled(
@@ -174,8 +316,13 @@ class PdfPanel(QWidget):
             Qt.TransformationMode.SmoothTransformation,
         )
         self._image_label.setPixmap(scaled)
-        x = (area_w - scaled.width()) // 2
-        y = (area_h - scaled.height()) // 2
+        # Grow the scroll widget past the viewport so scroll bars appear when
+        # the zoomed page overflows; centre the label inside it otherwise.
+        fw = max(dw, vw)
+        fh = max(dh, vh)
+        self._fit_area.setFixedSize(fw, fh)
+        x = (fw - scaled.width()) // 2
+        y = (fh - scaled.height()) // 2
         self._image_label.setGeometry(x, y, scaled.width(), scaled.height())
         self._sync_overlay_geometry()
 
@@ -277,6 +424,11 @@ class PdfPanel(QWidget):
         self._rows_spin.blockSignals(False)
         self._cols_spin.blockSignals(False)
         self.dimensions_changed.emit()
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self._scroll.viewport() and event.type() == QEvent.Type.Resize:
+            self._apply_fit()
+        return super().eventFilter(watched, event)
 
     def changeEvent(self, event) -> None:
         super().changeEvent(event)
