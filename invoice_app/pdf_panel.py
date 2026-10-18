@@ -36,6 +36,8 @@ class PdfPanel(QWidget):
     pdf_loaded = pyqtSignal()
     page_changed = pyqtSignal()
     dimensions_changed = pyqtSignal()
+    # Page image size or position changed (zoom, resize, new render).
+    preview_changed = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -325,17 +327,19 @@ class PdfPanel(QWidget):
         y = (fh - scaled.height()) // 2
         self._image_label.setGeometry(x, y, scaled.width(), scaled.height())
         self._sync_overlay_geometry()
+        self.preview_changed.emit()
 
     def _sync_overlay_geometry(self) -> None:
         self._overlay.setGeometry(0, 0, self._image_label.width(), self._image_label.height())
-        if (
+        visible = (
             self._overlay.has_region()
             or self._overlay.row_fracs()
             or self._overlay.is_drawing_region()
             or self._overlay.has_text_rects()
-        ):
-            self._overlay.show()
-        self._overlay.raise_()
+        )
+        self._overlay.setVisible(visible)
+        if visible:
+            self._overlay.raise_()
 
     def widget_to_pdf_rect(
         self, x0: float, y0: float, x1: float, y1: float

@@ -15,6 +15,10 @@ from invoice_app.pdf_ocr import OcrLine, lines_raster_to_pdf
 from invoice_app.pdf_text import Word
 
 SCHEMA_VERSION = 1
+# Filesystem copies and SMB shares often shift mtime by a whole hour or two
+# (local UTC offset / daylight saving) while leaving the bytes unchanged.
+_MTIME_TOLERANCE_S = 2.0
+_MTIME_SKEW_HOURS = (1, 2)
 
 
 def cache_path_for_pdf(pdf_path: Path) -> Path:
@@ -26,14 +30,29 @@ def pdf_source_fingerprint(pdf_path: Path) -> tuple[float, int]:
     return (stat.st_mtime, stat.st_size)
 
 
+def _mtime_matches(stored: float, actual: float) -> bool:
+    delta = abs(stored - actual)
+    if delta <= _MTIME_TOLERANCE_S:
+        return True
+    hour = 3600.0
+    for hours in _MTIME_SKEW_HOURS:
+        if abs(delta - hours * hour) <= _MTIME_TOLERANCE_S:
+            return True
+    return False
+
+
 def cache_matches_pdf(pdf_path: Path, payload: dict[str, Any]) -> bool:
     try:
         mtime, size = pdf_source_fingerprint(pdf_path)
     except OSError:
         return False
+    try:
+        stored_mtime = float(payload.get("source-mtime", -1))
+    except (TypeError, ValueError):
+        return False
     return (
         payload.get("schema-version") == SCHEMA_VERSION
-        and float(payload.get("source-mtime", -1)) == mtime
+        and _mtime_matches(stored_mtime, mtime)
         and int(payload.get("source-size", -1)) == size
     )
 

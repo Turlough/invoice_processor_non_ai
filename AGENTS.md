@@ -20,7 +20,7 @@ Batch-process supplier invoices (PDF, often OCR’d) into structured line items.
 - Centre panel: page nav (◀ ▶ + page spin) and zoom (Auto = fit, Height, Width, −/+ manual); the page sits in a scroll area when zoomed past the viewport (`PdfPanel._apply_fit`)
 - **Read → Line items** — map cells to PDF coordinates; fill table from `get_text("words")` via PyMuPDF
 - **Read → OCR grid** — rasterise the table region and fill the same table with PaddleOCR (`pdf_ocr.py`). Use this when the page has no text layer. One OCR pass; line boxes are assigned to cells by centre, same idea as line items
-- **Read → OCR batch** — PaddleOCR every page of every PDF in the loaded batch; writes `<stem>.ocr.json` beside each PDF (`ocr_cache.py`). Skips files whose sidecar matches PDF mtime/size. **Read → Show text rectangles** loads page 0 from the sidecar when present
+- **Read → OCR batch** — PaddleOCR every page of every PDF in the loaded batch; writes `<stem>.ocr.json` beside each PDF (`ocr_cache.py`). Skips files whose sidecar matches PDF size and mtime (mtime may be off by one or two whole hours). A matching sidecar is drawn as word rectangles on launch and whenever the page or document changes. **Read → Show text rectangles** uses that sidecar, or runs a live OCR pass when none matches
 
 Do **not** add other OCR engines, cloud APIs, or supplier templates unless the user asks. Grid OCR stays on PaddleOCR.
 

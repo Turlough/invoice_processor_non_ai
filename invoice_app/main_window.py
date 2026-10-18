@@ -252,6 +252,7 @@ class MainWindow(QMainWindow):
         self._pdf_panel = PdfPanel()
         self._pdf_panel.pdf_loaded.connect(self._on_pdf_loaded)
         self._pdf_panel.page_changed.connect(self._on_pdf_page_changed)
+        self._pdf_panel.preview_changed.connect(self._refresh_text_rects)
         self._pdf_panel.overlay().grid_changed.connect(self._resize_table)
         self._pdf_panel.dimensions_changed.connect(self._resize_table)
 
@@ -464,6 +465,17 @@ class MainWindow(QMainWindow):
     def _on_pdf_page_changed(self) -> None:
         self._apply_cached_ocr_for_current_page()
 
+    def _refresh_text_rects(self) -> None:
+        """Remap cached word boxes after the preview is scaled or resized."""
+        if not self._table_words:
+            return
+        self._apply_table_word_session(
+            self._table_words,
+            origin=self._table_words_origin,
+            size=self._table_words_size,
+            space=self._table_words_space,
+        )
+
     def _on_file_selected(self, current: QListWidgetItem | None, _previous) -> None:
         if current is None:
             self._pdf_panel.clear()
@@ -472,6 +484,7 @@ class MainWindow(QMainWindow):
                 self._save_state()
             return
         path = Path(current.data(Qt.ItemDataRole.UserRole))
+        self._table_words = None
         try:
             self._pdf_panel.load_pdf(path)
         except Exception as exc:
