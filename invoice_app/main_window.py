@@ -25,7 +25,13 @@ from PyQt6.QtWidgets import (
 
 from invoice_app.document_layout import load_layout, save_page_region
 from invoice_app.grid_infer import InferHints, infer_from_words
-from invoice_app.ocr_cache import load_cache, load_page_words, ocr_document_pages, write_cache
+from invoice_app.ocr_cache import (
+    load_cache,
+    load_page_words,
+    load_skew_by_page,
+    ocr_document_pages,
+    write_cache,
+)
 from invoice_app.pdf_ocr import (
     ocr_image,
     page_pdf_rect,
@@ -34,7 +40,7 @@ from invoice_app.pdf_ocr import (
     words_raster_to_pdf,
 )
 from invoice_app.pdf_panel import PdfPanel
-from invoice_app.pdf_text import Word, words_in_pdf_rect, words_in_rect, words_on_page
+from invoice_app.pdf_text import Word, words_on_page
 from invoice_app.projects import AppState, ConfigError, Project, list_projects
 
 
@@ -246,6 +252,7 @@ class MainWindow(QMainWindow):
         self._table_words_origin: tuple[float, float] = (0.0, 0.0)
         self._table_words_size: tuple[float, float] = (1.0, 1.0)
         self._table_words_space: str = "pdf"
+        self._auto_deskew = False
 
         self._file_list = QListWidget()
         self._file_list.currentItemChanged.connect(self._on_file_selected)
@@ -295,6 +302,10 @@ class MainWindow(QMainWindow):
         quit_action.triggered.connect(QApplication.instance().quit)
 
         layout_menu = self.menuBar().addMenu("&Layout")
+        self._deskew_action = layout_menu.addAction("&Auto deskew")
+        self._deskew_action.setCheckable(True)
+        self._deskew_action.triggered.connect(self._toggle_auto_deskew)
+        layout_menu.addSeparator()
         table_region = layout_menu.addAction("&Table region…")
         table_region.triggered.connect(self._table_region)
         draw_grid = layout_menu.addAction("&Draw grid")
@@ -465,6 +476,8 @@ class MainWindow(QMainWindow):
         if pdf_path is not None:
             self._pdf_panel.set_page_regions(load_layout(pdf_path))
             self._pdf_panel.refresh_page_layout()
+        if self._auto_deskew:
+            self._enable_auto_deskew(report=False)
         self._apply_cached_ocr_for_current_page()
         self._auto_apply_layout_after_region()
         self._resize_table()
@@ -479,8 +492,7 @@ class MainWindow(QMainWindow):
 
     def _on_table_region_defined(self) -> None:
         pdf_path = self._current_pdf_path()
-        overlay = self._pdf_panel.overlay()
-        norm = overlay.region_norm()
+        norm = self._pdf_panel.upright_page_region()
         if pdf_path is not None and norm is not None:
             try:
                 save_page_region(pdf_path, self._pdf_panel.page_index(), norm)
@@ -529,6 +541,80 @@ class MainWindow(QMainWindow):
             return
         self._state.pdf = path.name
         self._save_state()
+
+    def _toggle_auto_deskew(self, _checked: bool = False) -> None:
+        checked = self._deskew_action.isChecked()
+        if not checked:
+            self._auto_deskew = False
+            self._pdf_panel.zoom_to_fit()
+            self._pdf_panel.set_deskew_angles({})
+            self._apply_cached_ocr_for_current_page()
+            self._auto_apply_layout_after_region()
+            self.statusBar().showMessage("Auto deskew off.", 5000)
+            return
+        if self._pdf_panel.document() is None:
+            self._set_deskew_checked(False)
+            QMessageBox.information(self, "Auto deskew", "Load a PDF first.")
+            return
+        if not self._enable_auto_deskew(report=True):
+            return
+        self._apply_cached_ocr_for_current_page()
+        self._auto_apply_layout_after_region()
+
+    def _set_deskew_checked(self, checked: bool) -> None:
+        self._deskew_action.blockSignals(True)
+        self._deskew_action.setChecked(checked)
+        self._deskew_action.blockSignals(False)
+
+    def _enable_auto_deskew(self, *, report: bool) -> bool:
+        """Apply sidecar skew-deg to every page. The preview rotates the other way."""
+        pdf_path = self._current_pdf_path()
+        angles = load_skew_by_page(pdf_path) if pdf_path is not None else None
+        if angles is None:
+            self._pdf_panel.set_deskew_angles({})
+            if report:
+                self._auto_deskew = False
+                self._set_deskew_checked(False)
+                QMessageBox.information(
+                    self,
+                    "Auto deskew",
+                    "No OCR information for this PDF.\n"
+                    "Run Read → OCR batch, then try Auto deskew again.",
+                )
+            else:
+                self.statusBar().showMessage(
+                    "Auto deskew: no OCR information for this PDF.", 8000
+                )
+            return False
+        if not angles:
+            self._pdf_panel.set_deskew_angles({})
+            if report:
+                self._auto_deskew = False
+                self._set_deskew_checked(False)
+                QMessageBox.information(
+                    self,
+                    "Auto deskew",
+                    "The OCR sidecar has no skew-deg for this PDF.",
+                )
+            else:
+                self.statusBar().showMessage(
+                    "Auto deskew: OCR sidecar has no skew-deg.", 8000
+                )
+            return False
+        self._auto_deskew = True
+        self._set_deskew_checked(True)
+        self._pdf_panel.zoom_to_fit()
+        self._pdf_panel.set_deskew_angles(angles)
+        skew = angles.get(self._pdf_panel.page_index())
+        if skew is None:
+            message = "Auto deskew on. This page has no skew-deg."
+        elif abs(skew) < 0.05:
+            message = f"Auto deskew on. This page is already straight ({skew:.2f}°)."
+        else:
+            message = f"Auto deskew on. Levelled {skew:.2f}° of scan skew."
+        if report or skew is None or abs(skew or 0.0) >= 0.05:
+            self.statusBar().showMessage(message, 8000)
+        return True
 
     def _table_region(self) -> None:
         if self._pdf_panel.document() is None:
@@ -817,23 +903,24 @@ class MainWindow(QMainWindow):
                 )
             return False
         if self._table_words_space == "pdf":
-            pdf_rect = self._pdf_panel.table_region_pdf_rect()
-            if pdf_rect is None:
-                return False
-            subset = words_in_pdf_rect(self._table_words, *pdf_rect)
             bounds = self._pdf_panel.overlay().region_widget_bounds()
             if bounds is None:
                 return False
             rx0, ry0, rx1, ry1 = bounds
             rw_px, rh_px = rx1 - rx0, ry1 - ry0
-            px0, py0, px1, py1 = pdf_rect
+            if rw_px <= 0 or rh_px <= 0:
+                return False
             region_words: list[Word] = []
-            for w in subset:
-                wx0 = ((w.x0 - px0) / (px1 - px0)) * rw_px
-                wy0 = ((w.y0 - py0) / (py1 - py0)) * rh_px
-                wx1 = ((w.x1 - px0) / (px1 - px0)) * rw_px
-                wy1 = ((w.y1 - py0) / (py1 - py0)) * rh_px
-                region_words.append(Word(wx0, wy0, wx1, wy1, w.text))
+            for word in self._table_words:
+                wx0, wy0, wx1, wy1 = self._pdf_panel.pdf_rect_to_widget(
+                    word.x0, word.y0, word.x1, word.y1
+                )
+                cx = (wx0 + wx1) / 2
+                cy = (wy0 + wy1) / 2
+                if rx0 <= cx <= rx1 and ry0 <= cy <= ry1:
+                    region_words.append(
+                        Word(wx0 - rx0, wy0 - ry0, wx1 - rx0, wy1 - ry0, word.text)
+                    )
             origin = (0.0, 0.0)
             size = (rw_px, rh_px)
             words_for_infer = region_words
@@ -939,8 +1026,7 @@ class MainWindow(QMainWindow):
         for r in range(rows):
             for c in range(cols):
                 x0, y0, x1, y1 = overlay.cell_widget_rect(r, c)
-                px0, py0, px1, py1 = self._pdf_panel.widget_to_pdf_rect(x0, y0, x1, y1)
-                text = words_in_rect(words, px0, py0, px1, py1)
+                text = self._pdf_panel.text_in_widget_rect(words, x0, y0, x1, y1)
                 self._table.setItem(r, c, QTableWidgetItem(text))
 
     def _ocr_grid(self) -> None:
@@ -964,9 +1050,14 @@ class MainWindow(QMainWindow):
         cols = len(overlay.col_fracs()) - 1
         x0, y0, _, _ = overlay.cell_widget_rect(0, 0)
         _, _, x1, y1 = overlay.cell_widget_rect(rows - 1, cols - 1)
-        pdf_rect = self._pdf_panel.widget_to_pdf_rect(x0, y0, x1, y1)
         try:
-            image, origin, size = region_image(doc, self._pdf_panel.page_index(), pdf_rect)
+            if self._pdf_panel.is_deskewed():
+                image, origin, size = self._pdf_panel.raster_widget_rect(x0, y0, x1, y1)
+            else:
+                pdf_rect = self._pdf_panel.widget_to_pdf_rect(x0, y0, x1, y1)
+                image, origin, size = region_image(
+                    doc, self._pdf_panel.page_index(), pdf_rect
+                )
         except Exception as exc:
             QMessageBox.warning(
                 self,

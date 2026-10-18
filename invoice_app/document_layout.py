@@ -67,7 +67,7 @@ def _read_layout_file(pdf_path: Path) -> dict[str, Any] | None:
 
 
 def load_layout(pdf_path: Path) -> dict[int, tuple[float, float, float, float]]:
-    """Return page index → normalised table region (0..1 on page preview)."""
+    """Return page index → normalised table region (0..1 on the upright page)."""
     payload = _read_layout_file(pdf_path)
     if payload is None or not cache_matches_pdf(pdf_path, payload):
         return {}

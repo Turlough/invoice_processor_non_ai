@@ -105,6 +105,34 @@ def load_page_words(pdf_path: Path, page_index: int) -> list[Word] | None:
     return None
 
 
+def load_skew_by_page(pdf_path: Path) -> dict[int, float] | None:
+    """Return ``page index → skew-deg`` from a matching OCR sidecar.
+
+    ``None`` means there is no usable sidecar. An empty dict means the sidecar
+    matched but no page has a numeric ``skew-deg``. Angles are degrees, positive
+    when text baselines run down to the right.
+    """
+    payload = load_cache(pdf_path)
+    if payload is None:
+        return None
+    pages = payload.get("pages")
+    if not isinstance(pages, list):
+        return {}
+    angles: dict[int, float] = {}
+    for entry in pages:
+        if not isinstance(entry, dict) or "skew-deg" not in entry:
+            continue
+        raw = entry.get("skew-deg")
+        if raw is None:
+            continue
+        try:
+            page_index = int(entry.get("page", -1))
+            angles[page_index] = float(raw)
+        except (TypeError, ValueError):
+            continue
+    return angles
+
+
 def median_skew_deg(polys: list[tuple[tuple[float, float], ...]]) -> float | None:
     angles: list[float] = []
     for poly in polys:
