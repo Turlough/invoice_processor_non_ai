@@ -1,66 +1,98 @@
-# Agent guidance (DOX)
+# DOX framework
 
-This file is the canonical context for AI agents working on **invoice_processor**. Update it when architecture, conventions, or scope change.
+- DOX is highly performant AGENTS.md hierarchy installed here
+- Agent must follow DOX instructions across any edits
 
-## Product intent
+## Repository purpose
 
-Batch-process supplier invoices (PDF, often OCR’d) into structured line items. Formats cluster by **supplier**; the PoC assumes **one layout** and manual grid alignment. Metadata (supplier block, totals, tax) is deferred.
+PyQt6 desktop app (`main.py`, `invoice_app/`) for batch-processing supplier invoices (PDF, text-layer or scanned) into structured line items via a draggable or inferred table grid, backed by PyMuPDF (`fitz`) and PaddleOCR 3.x (PP-OCRv6 on CPU), with config-driven per-row validation (`invoice_app/validation/`).
 
-## PoC scope (current)
+## Core Contract
 
-- PyQt6: file list | PDF preview + draggable grid | line-item table
-- `.env` sets `CONFIG_DIRECTORY` (loaded via python-dotenv); each subdirectory is a **project** with a `project_config.json` (`invoice_app/projects.py`)
-- **File → Project** — pick a project; creates `project_config.json` if missing, folder-picks and records `data-directory` if unset
-- **File → Load batch** — list `*.pdf` from a subdirectory of the project's `data-directory` (a *batch*)
-- Last project/batch/PDF persist per user via `platformdirs` (`AppState` in `projects.py`, `app_config.json` under the OS config dir — not in `CONFIG_DIRECTORY`); restored at startup, saved on every selection change
-- **Layout → Table region…** — rubber-band rectangle (normalized coords on preview); saved per page in ``<stem>.json`` beside the PDF (same fingerprint rules as ``.ocr.json``)
-- **Layout → Draw grid** — cell grid inside region only; user drags internal lines. If the project has saved **`col-fracs`**, only vertical dividers are drawn (no rows yet).
-- **Layout → Save column fracs** — writes overlay `col_fracs` to `project_config.json` (`col-fracs` key). Right-clicking inside a column on the grid opens a column settings dialog (column `name` and `anchor` checkbox, persisted under `columns` in `project_config.json`).
-- **Layout → Auto deskew** — if `<stem>.ocr.json` has `skew-deg` for a page, rotate the preview the other way so baselines are level. The canvas grows to hold every corner (no crop) and Auto zoom fits that expanded page in the panel. Saved table regions stay in upright-page fractions.
-- **Read → Infer grid** — OCR/text boxes in the table region; with saved `col-fracs`, columns are fixed and only rows are inferred (`grid_infer.py`), using anchor columns (and vertical regularity heuristics) so multi-line or sparse columns do not shift row boundaries. The drawn region is line items only (headers sit outside it and may be missing on later pages), so every band in the region is a data row, starting at table row 1.
-- Centre panel: page nav (◀ ▶ + page spin) and zoom (Auto = fit, Height, Width, −/+ manual); the page sits in a scroll area when zoomed past the viewport (`PdfPanel._apply_fit`)
-- **Read → Line items** — map cells to PDF coordinates; fill table from `get_text("words")` via PyMuPDF
-- **Read → OCR grid** — rasterise the table region and fill the same table with PaddleOCR (`pdf_ocr.py`). Use this when the page has no text layer. One OCR pass; line boxes are assigned to cells by centre, same idea as line items
-- **Read → OCR batch** — PaddleOCR every page of every PDF in the loaded batch; writes `<stem>.ocr.json` beside each PDF (`ocr_cache.py`). Skips files whose sidecar matches PDF size and mtime (mtime may be off by one or two whole hours). A matching sidecar is drawn as word rectangles on launch and whenever the page or document changes. **Read → Show text rectangles** uses that sidecar, or runs a live OCR pass when none matches
-- **Validations (`invoice_app/validation/`)** — config-driven line-item validation rules under `"validations"` in `project_config.json` (`ProjectValidations`, `ValidationContext`, `PROJECT_VALIDATION_REGISTRY`). Runs automatically when the table is populated or edited, highlighting failing cells in red (with a fault tooltip) in both the line-item table and the PDF overlay grid. Strategies include `hours-times-rate-equals-total` (`field_names: [hours, rate, total]`, `params.tolerance` default `0.01`), `sum-should-equal-total`, `between-values`, and `regex`.
+- AGENTS.md files are binding work contracts for their subtrees
+- Work products, source materials, instructions, records, assets, and durable docs must stay understandable from the nearest applicable AGENTS.md plus every parent AGENTS.md above it
 
-Do **not** add other OCR engines, cloud APIs, or supplier templates unless the user asks. Grid OCR stays on PaddleOCR.
+## Read Before Editing
 
-## Tech stack
+1. Read the root AGENTS.md
+2. Identify every file or folder you expect to touch
+3. Walk from the repository root to each target path
+4. Read every AGENTS.md found along each route
+5. If a parent AGENTS.md lists a child AGENTS.md whose scope contains the path, read that child and continue from there
+6. Use the nearest AGENTS.md as the local contract and parent docs for repo-wide rules
+7. If docs conflict, the closer doc controls local work details, but no child doc may weaken DOX
 
-| Layer | Choice |
-|-------|--------|
-| UI | PyQt6 |
-| PDF render + text | PyMuPDF (`fitz`) |
-| OCR | PaddleOCR 3.x (PP-OCRv6) on PaddlePaddle 3.2.2, CPU, oneDNN off |
-| Packaging | `pyproject.toml`, Python ≥ 3.13 |
+Do not rely on memory. Re-read the applicable DOX chain in the current session before editing.
 
-## Code conventions
+## Update After Editing
 
-- Keep changes minimal and match existing module boundaries under `invoice_app/`.
-- PDF coordinates: use page user space; map from widget pixels in `PdfPanel.widget_to_pdf_rect`.
-- Grid state: normalized fractions `0..1` in `GridOverlay` (`row_fracs`, `col_fracs`).
-- No commits unless the user explicitly requests them.
+Every meaningful change requires a DOX pass before the task is done.
 
-## Extension points (future)
+Update the closest owning AGENTS.md when a change affects:
 
-1. **`pdf_text.py` / `pdf_ocr.py`** — cell assignment heuristics (reading order, multi-line cells, header row skip). OCR runs off the UI thread in `_OcrGridWorker` so the Paddle engine stays on one thread.
-2. **`grid_overlay.py`** — optional region-of-interest box limiting grid to line-item band only.
-3. **Templates** — JSON per supplier: fractions, column names, page index.
-4. **Persistence** — save grid + table edits per file.
+- purpose, scope, ownership, or responsibilities
+- durable structure, contracts, workflows, or operating rules
+- required inputs, outputs, permissions, constraints, side effects, or artifacts
+- user preferences about behavior, communication, process, organization, or quality
+- AGENTS.md creation, deletion, move, rename, or index contents
 
-## Feasibility notes for agents
+Update parent docs when parent-level structure, ownership, workflow, or child index changes. Update child docs when parent changes alter local rules. Remove stale or contradictory text immediately. Small edits that do not change behavior or contracts may leave docs unchanged, but the DOX pass still must happen.
 
-- **Read from existing text layer**: **Read → Line items** (`page.get_text("words")`).
-- **Image-only PDFs**: **Read → OCR grid**. First run downloads PP-OCRv6 models (network). PaddlePaddle stays pinned at 3.2.2; 3.3.x CPU oneDNN breaks repeated inference.
-- **Multi-page**: `PdfPanel.set_page` switches pages; reads use the current page index. Table **regions** are stored per page in the document sidecar; project **col-fracs** apply to any page that has a region. When a region is loaded or drawn, col-fracs and infer-grid run automatically if OCR sidecar data exists. OCR sidecar lookups are per page (`load_page_words`).
+## Hierarchy
 
-## Commands
+- Root AGENTS.md is the DOX rail: project-wide instructions, global preferences, durable workflow rules, and the top-level Child DOX Index
+- Child AGENTS.md files own domain-specific instructions and their own Child DOX Index
+- Each parent explains what its direct children cover and what stays owned by the parent
+- The closer a doc is to the work, the more specific and practical it must be
 
-```bash
-uv sync && python main.py
-```
+## Child Doc Shape
 
-## User docs
+- Create a child AGENTS.md when a folder becomes a durable boundary with its own purpose, rules, responsibilities, workflow, materials, or quality standards
+- Work Guidance must reflect the current standards of the project or user instructions; if there are no specific standards or instructions yet, leave it empty
+- Verification must reflect an existing check; if no verification framework exists yet, leave it empty and update it when one exists
 
-Human-oriented setup and UI description: **README.md**.
+Default section order:
+
+- Purpose
+- Ownership
+- Local Contracts
+- Work Guidance
+- Verification
+- Child DOX Index
+
+## Style
+
+- Keep docs concise, current, and operational
+- Document stable contracts, not diary entries
+- Put broad rules in parent docs and concrete details in child docs
+- Prefer direct bullets with explicit names
+- Do not duplicate rules across many files unless each scope needs a local version
+- Delete stale notes instead of explaining history
+- Trim obvious statements, repeated rules, misplaced detail, and warnings for risks that no longer exist
+
+## Closeout
+
+1. Re-check changed paths against the DOX chain
+2. Update nearest owning docs and any affected parents or children
+3. Refresh every affected Child DOX Index
+4. Remove stale or contradictory text
+5. Run existing verification when relevant
+6. Report any docs intentionally left unchanged and why
+
+## User Preferences
+
+When the user requests a durable behavior change, record it here or in the relevant child AGENTS.md
+
+- Do not add other OCR engines, cloud APIs, or supplier templates unless the user asks; grid and batch OCR stay on PaddleOCR (`paddlepaddle==3.2.2` on CPU with oneDNN disabled; 3.3.x CPU oneDNN breaks repeated inference when image sizes change).
+- Do not create git commits unless the user explicitly requests them.
+- Drawn table regions cover line items only (column headers sit above the region and may be absent on later pages), so every inferred band inside the region is a data row starting at table row 1.
+- When a page has a table region (loaded from `<stem>.json` or newly drawn), automatically apply project `col-fracs` and run grid inference if OCR word data is available for that page.
+- Right-clicking inside a column on the grid opens a column settings dialog (`Name` and `Anchor` checkbox) saved to `columns` in `project_config.json`; anchor columns drive row inference so multi-line or sparse columns do not shift row boundaries.
+- Line-item validations configured under `"validations"` in `project_config.json` run automatically whenever the table is populated or edited, highlighting failing cells in red (with fault tooltip) in both the right-hand table and the PDF grid overlay.
+
+## Child DOX Index
+
+- `invoice_app/AGENTS.md` — PyQt6 UI, PDF preview/deskew, grid overlay, OCR/text extraction, grid inference, and project/sidecar persistence
+  - `invoice_app/validation/AGENTS.md` — config-driven line-item validation runner and strategies
+  - `invoice_app/examples/AGENTS.md` — example JSON schemas (`project_config.json`, `document_config.json`)
+- `tests/AGENTS.md` — automated unit tests
