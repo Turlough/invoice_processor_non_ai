@@ -6,11 +6,16 @@ import traceback
 from pathlib import Path
 
 import pymupdf as fitz
-from PyQt6.QtCore import QMutex, Qt, QThread, QWaitCondition, pyqtSignal
+from PyQt6.QtCore import QMutex, QPoint, Qt, QThread, QWaitCondition, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
+    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QHBoxLayout,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QProgressDialog,
@@ -263,6 +268,7 @@ class MainWindow(QMainWindow):
         self._pdf_panel.region_defined.connect(self._on_table_region_defined)
         self._pdf_panel.preview_changed.connect(self._refresh_text_rects)
         self._pdf_panel.overlay().grid_changed.connect(self._resize_table)
+        self._pdf_panel.overlay().column_context_requested.connect(self._on_column_context)
         self._pdf_panel.dimensions_changed.connect(self._resize_table)
 
         self._table = QTableWidget()
@@ -676,29 +682,102 @@ class MainWindow(QMainWindow):
         cols = len(col_fracs) - 1 if len(col_fracs) >= 2 else self._pdf_panel.num_cols()
         self._table.setRowCount(rows)
         self._table.setColumnCount(cols)
-        headers = [f"Col {c + 1}" for c in range(cols)]
+        names = self._project.column_names() if self._project is not None else []
+        headers = [
+            names[c] if c < len(names) else f"Col {c + 1}"
+            for c in range(cols)
+        ]
         self._table.setHorizontalHeaderLabels(headers)
         for r in range(rows):
             self._table.setVerticalHeaderItem(r, QTableWidgetItem(str(r + 1)))
+
+    def _on_column_context(self, col_index: int, global_pos: QPoint) -> None:
+        if self._project is None:
+            QMessageBox.information(
+                self,
+                "Column settings",
+                "Choose a project first (File → Project) to configure columns.",
+            )
+            return
+        overlay = self._pdf_panel.overlay()
+        col_fracs = overlay.col_fracs()
+        n_cols = len(col_fracs) - 1 if len(col_fracs) >= 2 else self._pdf_panel.num_cols()
+        if col_index < 0 or col_index >= n_cols:
+            return
+
+        current_name, current_anchor = self._project.column_entry(col_index, n_cols)
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Column {col_index + 1} settings")
+        form = QFormLayout(dialog)
+
+        name_edit = QLineEdit(current_name, dialog)
+        name_edit.setPlaceholderText(f"Col {col_index + 1}")
+        form.addRow("Name:", name_edit)
+
+        anchor_check = QCheckBox("Anchor (single-line, present on every row)", dialog)
+        anchor_check.setChecked(current_anchor)
+        form.addRow("", anchor_check)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog,
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+
+        dialog.adjustSize()
+        dialog.move(global_pos)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        try:
+            self._project.set_column_entry(
+                col_index,
+                name=name_edit.text(),
+                anchor=anchor_check.isChecked(),
+                n_cols=n_cols,
+            )
+        except OSError as exc:
+            QMessageBox.warning(self, "Column settings", f"Could not save project config:\n{exc}")
+            return
+
+        self._resize_table()
+        if self._table_words is not None and overlay.has_region():
+            self._infer_grid(silent=True)
+        state_str = "anchor" if anchor_check.isChecked() else "non-anchor"
+        label = name_edit.text().strip() or f"Col {col_index + 1}"
+        self.statusBar().showMessage(
+            f"Saved column {col_index + 1} (“{label}”, {state_str}) to project “{self._project.name}”.",
+            8000,
+        )
 
     def _infer_hints(self) -> InferHints:
         project = self._project
         names: list[str] = []
         col_fracs: list[float] | None = None
+        anchor_cols: list[bool] | None = None
+        overlay_cols = self._pdf_panel.overlay().col_fracs()
         if project is not None:
             names = project.column_names()
             col_fracs = project.col_fracs()
+        if not col_fracs and len(overlay_cols) >= 2:
+            col_fracs = overlay_cols
         if col_fracs and len(col_fracs) >= 2:
             n_cols = len(col_fracs) - 1
         elif names:
             n_cols = len(names)
         else:
             n_cols = self._pdf_panel.num_cols()
+        if project is not None:
+            anchor_cols = project.anchor_cols(n_cols)
         return InferHints(
             n_cols=n_cols,
             header_row_count=0,
             col_fracs=col_fracs,
             column_names=names,
+            anchor_cols=anchor_cols,
         )
 
     def _current_pdf_path(self) -> Path | None:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, pyqtSignal, QRectF
+from PyQt6.QtCore import QPoint, Qt, pyqtSignal, QRectF
 from PyQt6.QtGui import QBrush, QMouseEvent, QPainter, QPen
 from PyQt6.QtWidgets import QWidget
 
@@ -12,6 +12,7 @@ class GridOverlay(QWidget):
 
     grid_changed = pyqtSignal()
     region_changed = pyqtSignal()
+    column_context_requested = pyqtSignal(int, QPoint)
 
     HIT_PX = 6
 
@@ -208,7 +209,36 @@ class GridOverlay(QWidget):
                 return i
         return None
 
+    def _col_at_x(self, x: float, region: QRectF) -> int | None:
+        rw = region.width()
+        if rw <= 0 or len(self._col_fracs) < 2:
+            return None
+        frac = (x - region.x()) / rw
+        if frac < 0.0 or frac > 1.0:
+            return None
+        for col in range(len(self._col_fracs) - 1):
+            if self._col_fracs[col] <= frac <= self._col_fracs[col + 1]:
+                return col
+        return None
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.RightButton:
+            if (
+                not self._draw_region_active
+                and self._grid_visible
+                and self._region is not None
+                and len(self._col_fracs) >= 2
+            ):
+                region = self._region_rect_px()
+                pos = event.position()
+                if region is not None and region.contains(pos):
+                    col_idx = self._col_at_x(pos.x(), region)
+                    if col_idx is not None:
+                        self.column_context_requested.emit(
+                            col_idx, event.globalPosition().toPoint()
+                        )
+            return
+
         if event.button() != Qt.MouseButton.LeftButton:
             return
         pos = event.position()

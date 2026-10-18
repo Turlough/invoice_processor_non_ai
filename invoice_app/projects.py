@@ -93,12 +93,96 @@ class Project:
         if not isinstance(raw, list):
             return []
         names: list[str] = []
-        for entry in raw:
+        for idx, entry in enumerate(raw):
             if isinstance(entry, dict):
                 name = entry.get("name")
                 if isinstance(name, str) and name.strip():
                     names.append(name.strip())
+                else:
+                    names.append(f"Col {idx + 1}")
+            else:
+                names.append(f"Col {idx + 1}")
         return names
+
+    def anchor_cols(self, n_cols: int | None = None) -> list[bool]:
+        """Per-column anchor flags (default True for every column)."""
+        raw_cols = self.config.get("columns")
+        flags: list[bool] = []
+        if isinstance(raw_cols, list) and raw_cols:
+            for entry in raw_cols:
+                if isinstance(entry, dict):
+                    flags.append(bool(entry.get("anchor", True)))
+                else:
+                    flags.append(True)
+        else:
+            raw_anchors = self.config.get("anchor-cols")
+            if isinstance(raw_anchors, list):
+                flags = [bool(v) for v in raw_anchors]
+
+        if n_cols is None:
+            fracs = self.col_fracs()
+            if fracs and len(fracs) >= 2:
+                n_cols = len(fracs) - 1
+            else:
+                n_cols = len(flags)
+        if len(flags) < n_cols:
+            flags.extend([True] * (n_cols - len(flags)))
+        elif len(flags) > n_cols:
+            flags = flags[:n_cols]
+        return flags
+
+    def column_entry(self, col_index: int, n_cols: int | None = None) -> tuple[str, bool]:
+        """Return (name, anchor) for 0-based ``col_index``."""
+        raw = self.config.get("columns")
+        name = ""
+        anchor = True
+        if isinstance(raw, list) and 0 <= col_index < len(raw):
+            entry = raw[col_index]
+            if isinstance(entry, dict):
+                raw_name = entry.get("name")
+                if isinstance(raw_name, str):
+                    name = raw_name.strip()
+                anchor = bool(entry.get("anchor", True))
+        else:
+            flags = self.anchor_cols(n_cols)
+            if 0 <= col_index < len(flags):
+                anchor = flags[col_index]
+        return name, anchor
+
+    def set_column_entry(
+        self,
+        col_index: int,
+        *,
+        name: str | None = None,
+        anchor: bool = True,
+        n_cols: int | None = None,
+    ) -> None:
+        """Update (and persist) column metadata for ``col_index``."""
+        fracs = self.col_fracs()
+        if n_cols is None:
+            n_cols = (len(fracs) - 1) if (fracs and len(fracs) >= 2) else (col_index + 1)
+        n_cols = max(n_cols, col_index + 1)
+
+        raw = self.config.get("columns")
+        existing_anchors = self.anchor_cols(n_cols)
+        entries: list[dict] = []
+        for i in range(n_cols):
+            entry: dict = {}
+            if isinstance(raw, list) and i < len(raw) and isinstance(raw[i], dict):
+                entry = dict(raw[i])
+            entry.setdefault("anchor", existing_anchors[i] if i < len(existing_anchors) else True)
+            entries.append(entry)
+
+        target = entries[col_index]
+        if name is not None:
+            cleaned = name.strip()
+            if cleaned:
+                target["name"] = cleaned
+            else:
+                target.pop("name", None)
+        target["anchor"] = bool(anchor)
+        self.config["columns"] = entries
+        self.save()
 
     def header_row_count(self) -> int:
         raw = self.config.get("header-row-count", 0)

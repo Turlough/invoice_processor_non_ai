@@ -29,6 +29,7 @@ class InferHints:
     header_row_count: int = 0
     col_fracs: list[float] | None = None
     column_names: list[str] = field(default_factory=list)
+    anchor_cols: list[bool] | None = None
 
 
 @dataclass
@@ -225,45 +226,320 @@ def _occupied_columns(
     return cols
 
 
+def _sort_cell_words(words: list[Word], line_h: float) -> list[Word]:
+    """Order words in a cell top-to-bottom by line band, then left-to-right."""
+    if len(words) <= 1:
+        return list(words)
+    threshold = MERGE_GAP_FACTOR * max(line_h, 1.0)
+    by_cy = sorted(words, key=lambda w: _word_centre(w)[1])
+    lines: list[list[Word]] = [[by_cy[0]]]
+    for w in by_cy[1:]:
+        cy = _word_centre(w)[1]
+        prev_cy = _median([_word_centre(p)[1] for p in lines[-1]])
+        if cy - prev_cy > threshold:
+            lines.append([w])
+        else:
+            lines[-1].append(w)
+    ordered: list[Word] = []
+    for line in lines:
+        ordered.extend(sorted(line, key=lambda w: w.x0))
+    return ordered
+
+
+def _classify_anchor_bands(
+    data_bands: list[RowBand],
+    occ_list: list[set[int]],
+    n_cols: int,
+    allowed_anchors: set[int] | None = None,
+) -> tuple[list[bool], set[int]]:
+    """Identify anchor bands (one per logical row) and wrapping/non-anchor column indices."""
+    n = len(data_bands)
+    if n <= 1 or n_cols <= 1:
+        return [True] * n, set()
+
+    if allowed_anchors is not None:
+        candidate_cols = {c for c in allowed_anchors if 0 <= c < n_cols}
+    else:
+        candidate_cols = set(range(n_cols))
+
+    if not candidate_cols:
+        candidate_cols = set(range(n_cols))
+
+    # User explicitly narrowed down anchor columns: any band occupying at least one
+    # user-selected anchor column is an anchor candidate, and disabled columns are non-anchor.
+    user_narrowed = len(candidate_cols) < n_cols
+
+    col_bands: dict[int, list[int]] = {}
+    for i, occ in enumerate(occ_list):
+        for c in occ:
+            col_bands.setdefault(c, []).append(i)
+    if not col_bands:
+        return [True] * n, set()
+
+    cand_with_data = [c for c in candidate_cols if c in col_bands]
+    if not cand_with_data:
+        cand_with_data = list(col_bands.keys())
+
+    # Check vertical regularity of each candidate column to distinguish fully-populated
+    # single-line spine columns from sparse columns (which have missing-row holes).
+    table_y0 = data_bands[0].y0
+    table_y1 = data_bands[-1].y1
+    table_span = max(table_y1 - table_y0, 1.0)
+
+    regular_counts: list[int] = []
+    for c in cand_with_data:
+        idxs = col_bands[c]
+        if len(idxs) < 2:
+            continue
+        cys = [(data_bands[i].y0 + data_bands[i].y1) / 2 for i in idxs]
+        steps = [cys[k + 1] - cys[k] for k in range(len(cys) - 1)]
+        med_step = max(_median(steps), 1.0)
+        max_step = max(steps)
+        top_margin = cys[0] - table_y0
+        bot_margin = table_y1 - cys[-1]
+        # No missing-row holes inside the column, and no missing first/last row.
+        if (
+            max_step < 1.65 * med_step
+            and top_margin < 1.6 * med_step
+            and bot_margin < 1.6 * med_step
+            and len(idxs) * med_step >= 0.7 * table_span
+        ):
+            regular_counts.append(len(idxs))
+
+    if regular_counts:
+        # Take the mode (most common count) among regular full-span columns,
+        # breaking ties toward the smaller count (single-line over multi-line).
+        freq_map: dict[int, int] = {}
+        for cnt in regular_counts:
+            freq_map[cnt] = freq_map.get(cnt, 0) + 1
+        spine_freq = min(freq_map.keys(), key=lambda cnt: (-freq_map[cnt], cnt))
+    else:
+        # Fallback when rows have uneven heights or very few rows:
+        counts = sorted(len(col_bands[c]) for c in cand_with_data)
+        spine_freq = int(round(_median([float(x) for x in counts])))
+
+    non_anchor_cols = {c for c in range(n_cols) if c not in candidate_cols}
+    wrap_cols = set(non_anchor_cols)
+    for c, idxs in col_bands.items():
+        if len(idxs) > spine_freq:
+            wrap_cols.add(c)
+
+    spine_cols = {
+        c
+        for c in cand_with_data
+        if c not in wrap_cols and abs(len(col_bands[c]) - spine_freq) <= max(1, int(0.15 * spine_freq))
+    }
+
+    is_anchor: list[bool] = []
+    for occ in occ_list:
+        cand_occ = occ & candidate_cols
+        if not cand_occ:
+            is_anchor.append(False)
+        elif spine_cols and (cand_occ & spine_cols):
+            is_anchor.append(True)
+        elif user_narrowed and not (cand_occ <= wrap_cols):
+            is_anchor.append(True)
+        elif len(cand_occ) == 1 and next(iter(cand_occ)) in wrap_cols:
+            is_anchor.append(False)
+        elif wrap_cols and cand_occ <= wrap_cols:
+            is_anchor.append(False)
+        elif len(occ) == 1 and not user_narrowed and spine_freq > 1 and len(col_bands[next(iter(occ))]) > spine_freq:
+            is_anchor.append(False)
+        else:
+            is_anchor.append(True)
+
+    if not any(is_anchor):
+        return [True] * n, set()
+    return is_anchor, wrap_cols
+
+
+def _anchor_wrap_offset(
+    band: RowBand,
+    occ: set[int],
+    wrap_cols: set[int],
+    col_fracs: list[float],
+    origin: tuple[float, float],
+    size: tuple[float, float],
+) -> float:
+    """Signed vertical offset (cy_wrap - cy_spine) inside an anchor band.
+
+    Positive means the wrapped column's word sits lower than the spine columns
+    (typical of bottom-aligned rows where the first wrapped line is above).
+    Negative means it sits higher (typical of top-aligned rows).
+    """
+    if not wrap_cols or not (occ & wrap_cols) or not (occ - wrap_cols):
+        return 0.0
+    wrap_cys: list[float] = []
+    spine_cys: list[float] = []
+    for w in band.words:
+        nx, _ = _to_region_norm(w, origin, size)
+        c = _assign_col(nx, col_fracs)
+        cy = _word_centre(w)[1]
+        if c in wrap_cols:
+            wrap_cys.append(cy)
+        else:
+            spine_cys.append(cy)
+    if not wrap_cys or not spine_cys:
+        return 0.0
+    return _median(wrap_cys) - _median(spine_cys)
+
+
 def _merge_bands_into_logical_rows(
     bands: list[RowBand],
     col_fracs: list[float],
     origin: tuple[float, float],
     size: tuple[float, float],
     header_count: int,
+    anchor_cols: list[bool] | None = None,
 ) -> list[list[RowBand]]:
     if header_count >= len(bands):
         return []
-    data_bands = bands[header_count:]
+    raw_bands = bands[header_count:]
+    data_bands: list[RowBand] = []
+    for band in raw_bands:
+        if SUBTOTAL_PATTERN.search(_band_text(band)):
+            break
+        data_bands.append(band)
     if not data_bands:
         return []
 
-    heights = [b.y1 - b.y0 for b in data_bands]
-    line_h = max(_median(heights), 1.0)
-    logical: list[list[RowBand]] = []
-    i = 0
-    while i < len(data_bands):
-        band = data_bands[i]
-        if SUBTOTAL_PATTERN.search(_band_text(band)):
+    word_heights = [_word_height(w) for b in data_bands for w in b.words]
+    line_h = max(_median(word_heights), 1.0)
+    max_gap = WRAP_GAP_FACTOR * line_h
+    n_cols = max(len(col_fracs) - 1, 1)
+    occ_list = [_occupied_columns(b, col_fracs, origin, size) for b in data_bands]
+
+    allowed_anchors: set[int] | None = None
+    if anchor_cols is not None:
+        allowed_anchors = {
+            c for c in range(n_cols) if (anchor_cols[c] if c < len(anchor_cols) else True)
+        }
+
+    is_anchor, wrap_cols = _classify_anchor_bands(
+        data_bands, occ_list, n_cols, allowed_anchors=allowed_anchors
+    )
+    anchor_indices = [i for i, flag in enumerate(is_anchor) if flag]
+    if not anchor_indices:
+        return [[b] for b in data_bands]
+
+    sparse_cols = set(wrap_cols)
+    for i, flag in enumerate(is_anchor):
+        if not flag:
+            sparse_cols |= occ_list[i]
+
+    groups: list[list[RowBand]] = [[data_bands[idx]] for idx in anchor_indices]
+    leading_orphans: list[list[RowBand]] = []
+    trailing_orphans: list[list[RowBand]] = []
+
+    # 1. Leading sparse bands before the first anchor can only attach downward.
+    first_anchor = anchor_indices[0]
+    has_leading_prefix = False
+    for idx in range(first_anchor - 1, -1, -1):
+        cand = data_bands[idx]
+        if groups[0][0].y0 - cand.y1 < max_gap:
+            groups[0].insert(0, cand)
+            has_leading_prefix = True
+        else:
+            leading_orphans = [[data_bands[j]] for j in range(idx + 1)]
             break
-        group = [band]
-        j = i + 1
-        while j < len(data_bands):
-            nxt = data_bands[j]
-            if SUBTOTAL_PATTERN.search(_band_text(nxt)):
-                break
-            gap = nxt.y0 - group[-1].y1
-            occ = _occupied_columns(nxt, col_fracs, origin, size)
-            anchor = _occupied_columns(group[0], col_fracs, origin, size)
-            continuation = occ <= {0} or (len(occ) == 1 and 0 in occ)
-            has_numeric = any(c > 0 for c in anchor)
-            if continuation and has_numeric and gap < WRAP_GAP_FACTOR * line_h:
-                group.append(nxt)
-                j += 1
-            else:
-                break
-        logical.append(group)
-        i = j if j > i + 1 else i + 1
+
+    # 2. Trailing sparse bands after the last anchor can only attach upward.
+    last_anchor = anchor_indices[-1]
+    has_trailing_suffix = False
+    for idx in range(last_anchor + 1, len(data_bands)):
+        cand = data_bands[idx]
+        if cand.y0 - groups[-1][-1].y1 < max_gap:
+            groups[-1].append(cand)
+            has_trailing_suffix = True
+        else:
+            trailing_orphans = [[data_bands[j]] for j in range(idx, len(data_bands))]
+            break
+
+    # 3. Estimate table-wide alignment bias (leading/bottom vs trailing/top vs centered).
+    center_aligned = has_leading_prefix and has_trailing_suffix
+    if has_leading_prefix and not has_trailing_suffix:
+        boundary_bias = -1.0  # Sparse bands lead their anchor (bottom-aligned rows).
+    elif has_trailing_suffix and not has_leading_prefix:
+        boundary_bias = 1.0  # Sparse bands trail their anchor (top-aligned rows).
+    else:
+        boundary_bias = 0.0
+
+    offsets = [
+        _anchor_wrap_offset(
+            data_bands[idx], occ_list[idx], sparse_cols, col_fracs, origin, size
+        )
+        for idx in anchor_indices
+    ]
+    nonzero_offsets = [dy for dy in offsets if abs(dy) > 1e-3]
+    median_offset = _median(nonzero_offsets) if nonzero_offsets else 0.0
+
+    # 4. Partition each interior run of sparse bands between anchor k and anchor k+1.
+    interior_orphans: dict[int, list[list[RowBand]]] = {}
+    for k in range(len(anchor_indices) - 1):
+        a_prev_idx = anchor_indices[k]
+        a_next_idx = anchor_indices[k + 1]
+        run = data_bands[a_prev_idx + 1 : a_next_idx]
+        if not run:
+            continue
+
+        m = len(run)
+        chain = [data_bands[a_prev_idx], *run, data_bands[a_next_idx]]
+        # gaps[s] is the vertical gap if the row boundary is placed at cut s (0..m).
+        gaps = [chain[s + 1].y0 - chain[s].y1 for s in range(m + 1)]
+
+        max_up = 0
+        while max_up < m and gaps[max_up] < max_gap:
+            max_up += 1
+        min_down = m
+        while min_down > 0 and gaps[min_down] < max_gap:
+            min_down -= 1
+
+        if min_down <= max_up:
+            best_s = max_up
+            best_score = float("-inf")
+            prev_occ = occ_list[a_prev_idx]
+            next_occ = occ_list[a_next_idx]
+            run_cols = set().union(*(occ_list[a_prev_idx + 1 + j] for j in range(m)))
+            both_missing_wrap = bool(run_cols) and run_cols.isdisjoint(prev_occ) and run_cols.isdisjoint(next_occ)
+
+            for s in range(min_down, max_up + 1):
+                score = gaps[s]
+                if m >= 2 and (center_aligned or both_missing_wrap) and s == m // 2:
+                    score += 0.35 * line_h
+                if s == 0:
+                    if boundary_bias < 0:
+                        score += 0.35 * line_h
+                    score += 0.5 * median_offset
+                    # If only the lower anchor is missing the sparse column, prefer attaching down.
+                    if run_cols and run_cols.isdisjoint(next_occ) and not run_cols.isdisjoint(prev_occ):
+                        score += 0.25 * line_h
+                if s == m:
+                    if boundary_bias > 0:
+                        score += 0.35 * line_h
+                    score -= 0.5 * median_offset
+                    if run_cols and run_cols.isdisjoint(prev_occ) and not run_cols.isdisjoint(next_occ):
+                        score += 0.25 * line_h
+                    # Tiny tie-breaker favoring trailing continuation when all signals are equal.
+                    score += 1e-4 * line_h
+
+                if score > best_score:
+                    best_score = score
+                    best_s = s
+
+            groups[k].extend(run[:best_s])
+            groups[k + 1] = run[best_s:] + groups[k + 1]
+        else:
+            groups[k].extend(run[:max_up])
+            groups[k + 1] = run[min_down:] + groups[k + 1]
+            interior_orphans[k] = [[b] for b in run[max_up:min_down]]
+
+    logical: list[list[RowBand]] = []
+    logical.extend(leading_orphans)
+    for k, grp in enumerate(groups):
+        logical.append(grp)
+        if k in interior_orphans:
+            logical.extend(interior_orphans[k])
+    logical.extend(trailing_orphans)
     return logical
 
 
@@ -311,6 +587,7 @@ def _row_dict(
     column_names: list[str],
 ) -> dict[str, str]:
     words = [w for b in group for w in b.words]
+    line_h = max(_median([_word_height(w) for w in words]), 1.0) if words else 1.0
     by_col: dict[int, list[Word]] = {}
     for w in words:
         nx, _ = _to_region_norm(w, origin, size)
@@ -320,7 +597,7 @@ def _row_dict(
     n_cols = len(col_fracs) - 1
     for c in range(n_cols):
         key = column_names[c] if c < len(column_names) else f"col_{c + 1}"
-        cell_words = sorted(by_col.get(c, []), key=lambda w: (w.y0, w.x0))
+        cell_words = _sort_cell_words(by_col.get(c, []), line_h)
         row[key] = " ".join(w.text for w in cell_words)
     return row
 
@@ -363,7 +640,7 @@ def infer_from_words(
     header_count = 0
     header_bands = bands[:header_count]
     logical = _merge_bands_into_logical_rows(
-        bands, col_fracs, origin, size, header_count
+        bands, col_fracs, origin, size, header_count, anchor_cols=hints.anchor_cols
     )
     row_fracs = _logical_rows_to_fracs(header_bands, logical, origin, size)
     header_rows = [
