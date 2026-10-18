@@ -171,7 +171,7 @@ def _infer_col_fracs_from_numbers(
         slots = n_cols - 1
         step = max(len(right_edges) // slots, 1)
         gutters = [0.0]
-        for i in range(1, slots):
+        for i in range(slots):
             gutters.append(right_edges[min(i * step, len(right_edges) - 1)])
         gutters.append(1.0)
         # Ensure strictly increasing with minimum width.
