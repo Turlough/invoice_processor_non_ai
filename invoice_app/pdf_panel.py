@@ -35,6 +35,7 @@ class _FitArea(QWidget):
 class PdfPanel(QWidget):
     pdf_loaded = pyqtSignal()
     page_changed = pyqtSignal()
+    region_defined = pyqtSignal()
     dimensions_changed = pyqtSignal()
     # Page image size or position changed (zoom, resize, new render).
     preview_changed = pyqtSignal()
@@ -43,6 +44,7 @@ class PdfPanel(QWidget):
         super().__init__(parent)
         self._doc: fitz.Document | None = None
         self._page_index = 0
+        self._page_regions: dict[int, tuple[float, float, float, float]] = {}
         self._page_size: tuple[float, float] = (1.0, 1.0)
         self._render_scale = 2.0
         self._source_pixmap: QPixmap | None = None
@@ -115,6 +117,7 @@ class PdfPanel(QWidget):
 
         self._overlay = GridOverlay(self._image_label)
         self._overlay.hide()
+        self._overlay.region_changed.connect(self._on_overlay_region_changed)
 
         layout = QVBoxLayout(self)
         layout.addLayout(nav)
@@ -167,10 +170,44 @@ class PdfPanel(QWidget):
         index = max(0, min(index, self._doc.page_count - 1))
         if index == self._page_index:
             return
+        self._remember_region_for_page(self._page_index)
         self._page_index = index
         self._render_page()
+        self._apply_region_for_current_page(clear_grid=True)
         self._update_page_controls()
         self.page_changed.emit()
+
+    def set_page_regions(
+        self, regions: dict[int, tuple[float, float, float, float]]
+    ) -> None:
+        self._page_regions = dict(regions)
+
+    def page_regions(self) -> dict[int, tuple[float, float, float, float]]:
+        return dict(self._page_regions)
+
+    def _remember_region_for_page(self, page_index: int) -> None:
+        norm = self._overlay.region_norm()
+        if norm is not None:
+            self._page_regions[page_index] = norm
+        else:
+            self._page_regions.pop(page_index, None)
+
+    def _apply_region_for_current_page(self, *, clear_grid: bool) -> None:
+        region = self._page_regions.get(self._page_index)
+        self._overlay.clear_text_rects()
+        if clear_grid:
+            self._overlay.set_row_fracs([])
+            self._overlay.set_col_fracs([])
+            self._overlay.set_visible_grid(False)
+        self._overlay.set_region_norm(region)
+        self._sync_overlay_geometry()
+
+    def _on_overlay_region_changed(self) -> None:
+        norm = self._overlay.region_norm()
+        if norm is not None:
+            self._page_regions[self._page_index] = norm
+        self._sync_overlay_geometry()
+        self.region_defined.emit()
 
     def page_size_pdf(self) -> tuple[float, float]:
         return self._page_size
@@ -183,10 +220,12 @@ class PdfPanel(QWidget):
             self._doc.close()
         self._doc = fitz.open(path)
         self._page_index = 0
+        self._page_regions = {}
         self._overlay.reset()
         self._zoom_mode = "auto"
         self._update_zoom_buttons()
         self._render_page()
+        self._apply_region_for_current_page(clear_grid=True)
         self._update_page_controls()
         self.pdf_loaded.emit()
 
@@ -195,6 +234,7 @@ class PdfPanel(QWidget):
             self._doc.close()
             self._doc = None
         self._page_index = 0
+        self._page_regions = {}
         self._source_pixmap = None
         self._image_label.clear()
         self._overlay.reset()
@@ -413,6 +453,10 @@ class PdfPanel(QWidget):
 
     def refresh_overlay(self) -> None:
         self._sync_overlay_geometry()
+
+    def refresh_page_layout(self) -> None:
+        """Apply the stored table region for the current page (clears grid lines)."""
+        self._apply_region_for_current_page(clear_grid=True)
 
     def set_inferred_grid(self, row_fracs: list[float], col_fracs: list[float]) -> None:
         self._overlay.set_row_fracs(row_fracs)

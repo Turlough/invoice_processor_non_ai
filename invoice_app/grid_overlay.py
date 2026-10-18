@@ -57,6 +57,16 @@ class GridOverlay(QWidget):
     def region_norm(self) -> tuple[float, float, float, float] | None:
         return self._region
 
+    def set_region_norm(
+        self, region: tuple[float, float, float, float] | None
+    ) -> None:
+        """Set the table region without starting a rubber-band draw."""
+        self._region = region
+        self._draw_region_active = False
+        self._region_anchor = None
+        self._region_drag = None
+        self.update()
+
     def region_widget_bounds(self) -> tuple[float, float, float, float] | None:
         rect = self._region_rect_px()
         if rect is None:

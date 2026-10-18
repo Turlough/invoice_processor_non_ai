@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
 )
 
+from invoice_app.document_layout import load_layout, save_page_region
 from invoice_app.grid_infer import InferHints, infer_from_words
 from invoice_app.ocr_cache import load_cache, load_page_words, ocr_document_pages, write_cache
 from invoice_app.pdf_ocr import (
@@ -252,6 +253,7 @@ class MainWindow(QMainWindow):
         self._pdf_panel = PdfPanel()
         self._pdf_panel.pdf_loaded.connect(self._on_pdf_loaded)
         self._pdf_panel.page_changed.connect(self._on_pdf_page_changed)
+        self._pdf_panel.region_defined.connect(self._on_table_region_defined)
         self._pdf_panel.preview_changed.connect(self._refresh_text_rects)
         self._pdf_panel.overlay().grid_changed.connect(self._resize_table)
         self._pdf_panel.dimensions_changed.connect(self._resize_table)
@@ -311,7 +313,7 @@ class MainWindow(QMainWindow):
         show_rects = read_menu.addAction("Show text &rectangles")
         show_rects.triggered.connect(self._show_text_rectangles)
         infer_grid = read_menu.addAction("&Infer grid")
-        infer_grid.triggered.connect(self._infer_grid)
+        infer_grid.triggered.connect(lambda: self._infer_grid())
 
     def _populate_project_menu(self) -> None:
         self._project_menu.clear()
@@ -459,11 +461,46 @@ class MainWindow(QMainWindow):
         self._load_batch(folder, select_name=state.pdf)
 
     def _on_pdf_loaded(self) -> None:
+        pdf_path = self._current_pdf_path()
+        if pdf_path is not None:
+            self._pdf_panel.set_page_regions(load_layout(pdf_path))
+            self._pdf_panel.refresh_page_layout()
         self._apply_cached_ocr_for_current_page()
+        self._auto_apply_layout_after_region()
         self._resize_table()
 
     def _on_pdf_page_changed(self) -> None:
         self._apply_cached_ocr_for_current_page()
+        if not self._pdf_panel.overlay().has_region():
+            self._table.clearContents()
+        else:
+            self._auto_apply_layout_after_region()
+        self._resize_table()
+
+    def _on_table_region_defined(self) -> None:
+        pdf_path = self._current_pdf_path()
+        overlay = self._pdf_panel.overlay()
+        norm = overlay.region_norm()
+        if pdf_path is not None and norm is not None:
+            try:
+                save_page_region(pdf_path, self._pdf_panel.page_index(), norm)
+            except OSError as exc:
+                self.statusBar().showMessage(f"Could not save table region: {exc}", 8000)
+        self._auto_apply_layout_after_region()
+
+    def _auto_apply_layout_after_region(self) -> None:
+        """When a page has a table region, apply project col-fracs and infer if OCR exists."""
+        overlay = self._pdf_panel.overlay()
+        if not overlay.has_region():
+            return
+        saved = self._project.col_fracs() if self._project is not None else None
+        if saved:
+            self._pdf_panel.draw_column_grid(saved)
+        if self._table_words is not None:
+            if not self._infer_grid(silent=True):
+                self._table.clearContents()
+        else:
+            self._table.clearContents()
 
     def _refresh_text_rects(self) -> None:
         """Remap cached word boxes after the preview is scaled or resized."""
@@ -752,6 +789,7 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.information(self, "OCR batch", summary)
         self._apply_cached_ocr_for_current_page()
+        self._auto_apply_layout_after_region()
 
     def _on_ocr_batch_failed(self, message: str) -> None:
         self._ocr_batch_mode = False
@@ -759,34 +797,35 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("OCR batch failed.", 8000)
         QMessageBox.warning(self, "OCR batch", message or "OCR batch failed.")
 
-    def _infer_grid(self) -> None:
+    def _infer_grid(self, *, silent: bool = False) -> bool:
         if self._pdf_panel.document() is None:
-            QMessageBox.information(self, "Infer grid", "Load a PDF first.")
-            return
+            if not silent:
+                QMessageBox.information(self, "Infer grid", "Load a PDF first.")
+            return False
         if not self._pdf_panel.overlay().has_region():
-            QMessageBox.information(
-                self,
-                "Infer grid",
-                "Draw the line-item table area first (Layout → Table region…).",
-            )
-            return
+            if not silent:
+                QMessageBox.information(
+                    self,
+                    "Infer grid",
+                    "Draw the line-item table area first (Layout → Table region…).",
+                )
+            return False
         if self._table_words is None:
-            QMessageBox.information(
-                self,
-                "Infer grid",
-                "Run Read → Show text rectangles first (or wait for OCR to finish).",
-            )
-            return
+            if not silent:
+                QMessageBox.information(
+                    self,
+                    "Infer grid",
+                    "Run Read → Show text rectangles first (or wait for OCR to finish).",
+                )
+            return False
         if self._table_words_space == "pdf":
-            pw, ph = self._pdf_panel.page_size_pdf()
             pdf_rect = self._pdf_panel.table_region_pdf_rect()
             if pdf_rect is None:
-                return
+                return False
             subset = words_in_pdf_rect(self._table_words, *pdf_rect)
-            # Convert to region-normalised pixel space using table widget bounds.
             bounds = self._pdf_panel.overlay().region_widget_bounds()
             if bounds is None:
-                return
+                return False
             rx0, ry0, rx1, ry1 = bounds
             rw_px, rh_px = rx1 - rx0, ry1 - ry0
             px0, py0, px1, py1 = pdf_rect
@@ -808,12 +847,13 @@ class MainWindow(QMainWindow):
         hints = self._infer_hints()
         result = infer_from_words(words_for_infer, origin, size, hints)
         if len(result.row_fracs) < 2 or len(result.col_fracs) < 2:
-            QMessageBox.warning(
-                self,
-                "Infer grid",
-                "Could not infer a grid from the text boxes in the table region.",
-            )
-            return
+            if not silent:
+                QMessageBox.warning(
+                    self,
+                    "Infer grid",
+                    "Could not infer a grid from the text boxes in the table region.",
+                )
+            return False
         self._pdf_panel.set_inferred_grid(result.row_fracs, result.col_fracs)
         self._resize_table()
         names = hints.column_names
@@ -824,6 +864,7 @@ class MainWindow(QMainWindow):
             )
         rows = len(result.row_fracs) - 1
         cols = len(result.col_fracs) - 1
+        self._table.clearContents()
         for data_index, row_data in enumerate(result.rows):
             r = hints.header_row_count + data_index
             if r >= rows:
@@ -832,11 +873,13 @@ class MainWindow(QMainWindow):
                 key = names[c] if c < len(names) else f"col_{c + 1}"
                 text = row_data.get(key, "")
                 self._table.setItem(r, c, QTableWidgetItem(text))
-        self.statusBar().showMessage(
-            f"Infer grid: {result.data_row_count} data rows, "
-            f"{result.header_band_count} header band(s).",
-            8000,
-        )
+        if not silent:
+            self.statusBar().showMessage(
+                f"Infer grid: {result.data_row_count} data rows, "
+                f"{result.header_band_count} header band(s).",
+                8000,
+            )
+        return True
 
     def _on_ocr_words_succeeded(self, words: list) -> None:
         purpose = self._ocr_words_pending or "OCR"

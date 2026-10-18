@@ -13,7 +13,7 @@ Batch-process supplier invoices (PDF, often OCR’d) into structured line items.
 - **File → Project** — pick a project; creates `project_config.json` if missing, folder-picks and records `data-directory` if unset
 - **File → Load batch** — list `*.pdf` from a subdirectory of the project's `data-directory` (a *batch*)
 - Last project/batch/PDF persist per user via `platformdirs` (`AppState` in `projects.py`, `app_config.json` under the OS config dir — not in `CONFIG_DIRECTORY`); restored at startup, saved on every selection change
-- **Layout → Table region…** — rubber-band rectangle (normalized coords on preview)
+- **Layout → Table region…** — rubber-band rectangle (normalized coords on preview); saved per page in ``<stem>.json`` beside the PDF (same fingerprint rules as ``.ocr.json``)
 - **Layout → Draw grid** — cell grid inside region only; user drags internal lines. If the project has saved **`col-fracs`**, only vertical dividers are drawn (no rows yet).
 - **Layout → Save column fracs** — writes overlay `col_fracs` to `project_config.json` (`col-fracs` key).
 - **Read → Infer grid** — OCR/text boxes in the table region; with saved `col-fracs`, columns are fixed and only rows are inferred (`grid_infer.py`).
@@ -51,7 +51,7 @@ Do **not** add other OCR engines, cloud APIs, or supplier templates unless the u
 
 - **Read from existing text layer**: **Read → Line items** (`page.get_text("words")`).
 - **Image-only PDFs**: **Read → OCR grid**. First run downloads PP-OCRv6 models (network). PaddlePaddle stays pinned at 3.2.2; 3.3.x CPU oneDNN breaks repeated inference.
-- **Multi-page**: `PdfPanel.set_page` switches pages; reads use the current page index. Grid/region are normalised, so they carry across pages of a document; OCR sidecar lookups are per page (`load_page_words`).
+- **Multi-page**: `PdfPanel.set_page` switches pages; reads use the current page index. Table **regions** are stored per page in the document sidecar; project **col-fracs** apply to any page that has a region. When a region is loaded or drawn, col-fracs and infer-grid run automatically if OCR sidecar data exists. OCR sidecar lookups are per page (`load_page_words`).
 
 ## Commands
 
