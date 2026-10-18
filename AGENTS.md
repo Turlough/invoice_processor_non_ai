@@ -16,7 +16,7 @@ Batch-process supplier invoices (PDF, often OCR’d) into structured line items.
 - **Layout → Table region…** — rubber-band rectangle (normalized coords on preview); saved per page in ``<stem>.json`` beside the PDF (same fingerprint rules as ``.ocr.json``)
 - **Layout → Draw grid** — cell grid inside region only; user drags internal lines. If the project has saved **`col-fracs`**, only vertical dividers are drawn (no rows yet).
 - **Layout → Save column fracs** — writes overlay `col_fracs` to `project_config.json` (`col-fracs` key).
-- **Read → Infer grid** — OCR/text boxes in the table region; with saved `col-fracs`, columns are fixed and only rows are inferred (`grid_infer.py`).
+- **Read → Infer grid** — OCR/text boxes in the table region; with saved `col-fracs`, columns are fixed and only rows are inferred (`grid_infer.py`). The drawn region is line items only (headers sit outside it and may be missing on later pages), so every band in the region is a data row, starting at table row 1.
 - Centre panel: page nav (◀ ▶ + page spin) and zoom (Auto = fit, Height, Width, −/+ manual); the page sits in a scroll area when zoomed past the viewport (`PdfPanel._apply_fit`)
 - **Read → Line items** — map cells to PDF coordinates; fill table from `get_text("words")` via PyMuPDF
 - **Read → OCR grid** — rasterise the table region and fill the same table with PaddleOCR (`pdf_ocr.py`). Use this when the page has no text layer. One OCR pass; line boxes are assigned to cells by centre, same idea as line items

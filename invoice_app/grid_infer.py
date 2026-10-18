@@ -26,7 +26,7 @@ class RowBand:
 @dataclass
 class InferHints:
     n_cols: int
-    header_row_count: int = 1
+    header_row_count: int = 0
     col_fracs: list[float] | None = None
     column_names: list[str] = field(default_factory=list)
 
@@ -38,6 +38,8 @@ class InferResult:
     data_row_count: int
     rows: list[dict[str, str]]
     header_band_count: int
+    # One dict per leading grid row (same column keys as ``rows``).
+    header_rows: list[dict[str, str]] = field(default_factory=list)
 
 
 def _median(values: list[float]) -> float:
@@ -210,14 +212,6 @@ def _band_text(band: RowBand) -> str:
     return " ".join(w.text for w in parts)
 
 
-def _band_matches_column_headings(band: RowBand, column_names: list[str]) -> bool:
-    if not column_names:
-        return False
-    text = _band_text(band).lower()
-    hits = sum(1 for name in column_names if name.strip() and name.lower() in text)
-    return hits >= max(1, len(column_names) // 2)
-
-
 def _occupied_columns(
     band: RowBand,
     col_fracs: list[float],
@@ -357,24 +351,25 @@ def infer_from_words(
             data_row_count=0,
             rows=[],
             header_band_count=0,
+            header_rows=[],
         )
 
     if not saved_cols:
         col_fracs = _infer_col_fracs_from_numbers(filtered, origin, size, n_cols)
         col_fracs = _refine_col_fracs(filtered, origin, size, col_fracs)
 
-    header_count = hints.header_row_count
-    if hints.column_names:
-        for i, band in enumerate(bands[: min(4, len(bands))]):
-            if _band_matches_column_headings(band, hints.column_names):
-                header_count = max(header_count, i + 1)
-                break
-
+    # The drawn region is the line-item band only. Column headings sit above
+    # it and are often absent on later pages, so do not peel bands off as headers.
+    header_count = 0
     header_bands = bands[:header_count]
     logical = _merge_bands_into_logical_rows(
         bands, col_fracs, origin, size, header_count
     )
     row_fracs = _logical_rows_to_fracs(header_bands, logical, origin, size)
+    header_rows = [
+        _row_dict([band], col_fracs, origin, size, hints.column_names)
+        for band in header_bands
+    ]
     rows = [
         _row_dict(group, col_fracs, origin, size, hints.column_names)
         for group in logical
@@ -384,5 +379,6 @@ def infer_from_words(
         col_fracs=col_fracs,
         data_row_count=len(logical),
         rows=rows,
-        header_band_count=header_count,
+        header_band_count=len(header_rows),
+        header_rows=header_rows,
     )

@@ -101,10 +101,10 @@ class Project:
         return names
 
     def header_row_count(self) -> int:
-        raw = self.config.get("header-row-count", 1)
+        raw = self.config.get("header-row-count", 0)
         if isinstance(raw, int) and raw >= 0:
             return raw
-        return 1
+        return 0
 
     def col_fracs(self) -> list[float] | None:
         raw = self.config.get("col-fracs")

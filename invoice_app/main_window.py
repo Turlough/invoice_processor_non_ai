@@ -598,11 +598,9 @@ class MainWindow(QMainWindow):
     def _infer_hints(self) -> InferHints:
         project = self._project
         names: list[str] = []
-        header_rows = 1
         col_fracs: list[float] | None = None
         if project is not None:
             names = project.column_names()
-            header_rows = project.header_row_count()
             col_fracs = project.col_fracs()
         if col_fracs and len(col_fracs) >= 2:
             n_cols = len(col_fracs) - 1
@@ -612,7 +610,7 @@ class MainWindow(QMainWindow):
             n_cols = self._pdf_panel.num_cols()
         return InferHints(
             n_cols=n_cols,
-            header_row_count=header_rows,
+            header_row_count=0,
             col_fracs=col_fracs,
             column_names=names,
         )
@@ -865,8 +863,7 @@ class MainWindow(QMainWindow):
         rows = len(result.row_fracs) - 1
         cols = len(result.col_fracs) - 1
         self._table.clearContents()
-        for data_index, row_data in enumerate(result.rows):
-            r = hints.header_row_count + data_index
+        for r, row_data in enumerate(result.rows):
             if r >= rows:
                 break
             for c in range(cols):
@@ -875,8 +872,7 @@ class MainWindow(QMainWindow):
                 self._table.setItem(r, c, QTableWidgetItem(text))
         if not silent:
             self.statusBar().showMessage(
-                f"Infer grid: {result.data_row_count} data rows, "
-                f"{result.header_band_count} header band(s).",
+                f"Infer grid: {result.data_row_count} data rows.",
                 8000,
             )
         return True
