@@ -1,21 +1,31 @@
 {
     "data-directory": "/path/to/data/directory",
-    "row-height": "height of the rows in pixels",
+    "col-fracs": [0.0, 0.4, 0.6, 0.8, 1.0],
     "columns": [
         {
-            "name": "column name",
-            "type": "column type(integer, float, string, date, time, datetime, boolean)",
-            "y-location": "y-location on the page "
+            "name": "Description",
+            "anchor": false
         },
         {
-            "name": "column name",
-            "type": "column type(integer, float, string, date, time, datetime, boolean)",
-            "y-location": "y-location on the page "
+            "name": "Shift Hours",
+            "anchor": true
         },
         {
-            "name": "column name",
-            "type": "column type(integer, float, string, date, time, datetime, boolean)",
-            "y-location": "y-location on the page "
+            "name": "Rates",
+            "anchor": true
+        },
+        {
+            "name": "Total",
+            "anchor": true
+        }
+    ],
+    "validations": [
+        {
+            "strategy": "hours-times-rate-equals-total",
+            "field_names": ["Shift Hours", "Rates", "Total"],
+            "params": {
+                "tolerance": 0.01
+            }
         }
     ]
- }
+}

@@ -22,6 +22,7 @@ Batch-process supplier invoices (PDF, often OCR’d) into structured line items.
 - **Read → Line items** — map cells to PDF coordinates; fill table from `get_text("words")` via PyMuPDF
 - **Read → OCR grid** — rasterise the table region and fill the same table with PaddleOCR (`pdf_ocr.py`). Use this when the page has no text layer. One OCR pass; line boxes are assigned to cells by centre, same idea as line items
 - **Read → OCR batch** — PaddleOCR every page of every PDF in the loaded batch; writes `<stem>.ocr.json` beside each PDF (`ocr_cache.py`). Skips files whose sidecar matches PDF size and mtime (mtime may be off by one or two whole hours). A matching sidecar is drawn as word rectangles on launch and whenever the page or document changes. **Read → Show text rectangles** uses that sidecar, or runs a live OCR pass when none matches
+- **Validations (`invoice_app/validation/`)** — config-driven line-item validation rules under `"validations"` in `project_config.json` (`ProjectValidations`, `ValidationContext`, `PROJECT_VALIDATION_REGISTRY`). Runs automatically when the table is populated or edited, highlighting failing cells in red (with a fault tooltip) in both the line-item table and the PDF overlay grid. Strategies include `hours-times-rate-equals-total` (`field_names: [hours, rate, total]`, `params.tolerance` default `0.01`), `sum-should-equal-total`, `between-values`, and `regex`.
 
 Do **not** add other OCR engines, cloud APIs, or supplier templates unless the user asks. Grid OCR stays on PaddleOCR.
 

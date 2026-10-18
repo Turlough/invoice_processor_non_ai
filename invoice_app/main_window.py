@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pymupdf as fitz
 from PyQt6.QtCore import QMutex, QPoint, Qt, QThread, QWaitCondition, pyqtSignal
+from PyQt6.QtGui import QBrush, QColor
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -47,6 +48,10 @@ from invoice_app.pdf_ocr import (
 from invoice_app.pdf_panel import PdfPanel
 from invoice_app.pdf_text import Word, words_on_page
 from invoice_app.projects import AppState, ConfigError, Project, list_projects
+from invoice_app.validation import ProjectValidations
+
+_INVALID_CELL_BG = QColor(255, 210, 210)
+_INVALID_CELL_FG = QColor(140, 0, 0)
 
 
 class _OcrWordsWorker(QThread):
@@ -273,6 +278,7 @@ class MainWindow(QMainWindow):
 
         self._table = QTableWidget()
         self._table.setAlternatingRowColors(True)
+        self._table.itemChanged.connect(self._on_table_item_changed)
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
@@ -492,6 +498,7 @@ class MainWindow(QMainWindow):
         self._apply_cached_ocr_for_current_page()
         if not self._pdf_panel.overlay().has_region():
             self._table.clearContents()
+            self._pdf_panel.overlay().clear_invalid_cells()
         else:
             self._auto_apply_layout_after_region()
         self._resize_table()
@@ -517,8 +524,10 @@ class MainWindow(QMainWindow):
         if self._table_words is not None:
             if not self._infer_grid(silent=True):
                 self._table.clearContents()
+                overlay.clear_invalid_cells()
         else:
             self._table.clearContents()
+            overlay.clear_invalid_cells()
 
     def _refresh_text_rects(self) -> None:
         """Remap cached word boxes after the preview is scaled or resized."""
@@ -746,6 +755,8 @@ class MainWindow(QMainWindow):
         self._resize_table()
         if self._table_words is not None and overlay.has_region():
             self._infer_grid(silent=True)
+        else:
+            self._validate_table()
         state_str = "anchor" if anchor_check.isChecked() else "non-anchor"
         label = name_edit.text().strip() or f"Col {col_index + 1}"
         self.statusBar().showMessage(
@@ -1028,14 +1039,19 @@ class MainWindow(QMainWindow):
             )
         rows = len(result.row_fracs) - 1
         cols = len(result.col_fracs) - 1
-        self._table.clearContents()
-        for r, row_data in enumerate(result.rows):
-            if r >= rows:
-                break
-            for c in range(cols):
-                key = names[c] if c < len(names) else f"col_{c + 1}"
-                text = row_data.get(key, "")
-                self._table.setItem(r, c, QTableWidgetItem(text))
+        self._table.blockSignals(True)
+        try:
+            self._table.clearContents()
+            for r, row_data in enumerate(result.rows):
+                if r >= rows:
+                    break
+                for c in range(cols):
+                    key = names[c] if c < len(names) else f"col_{c + 1}"
+                    text = row_data.get(key, "")
+                    self._table.setItem(r, c, QTableWidgetItem(text))
+        finally:
+            self._table.blockSignals(False)
+        self._validate_table()
         if not silent:
             self.statusBar().showMessage(
                 f"Infer grid: {result.data_row_count} data rows.",
@@ -1102,11 +1118,16 @@ class MainWindow(QMainWindow):
         rows = len(row_fracs) - 1
         cols = len(col_fracs) - 1
 
-        for r in range(rows):
-            for c in range(cols):
-                x0, y0, x1, y1 = overlay.cell_widget_rect(r, c)
-                text = self._pdf_panel.text_in_widget_rect(words, x0, y0, x1, y1)
-                self._table.setItem(r, c, QTableWidgetItem(text))
+        self._table.blockSignals(True)
+        try:
+            for r in range(rows):
+                for c in range(cols):
+                    x0, y0, x1, y1 = overlay.cell_widget_rect(r, c)
+                    text = self._pdf_panel.text_in_widget_rect(words, x0, y0, x1, y1)
+                    self._table.setItem(r, c, QTableWidgetItem(text))
+        finally:
+            self._table.blockSignals(False)
+        self._validate_table()
 
     def _ocr_grid(self) -> None:
         if self._ocr_busy or self._ocr_batch_mode:
@@ -1195,11 +1216,16 @@ class MainWindow(QMainWindow):
             return
 
         filled = 0
-        for r, row in enumerate(cells):
-            for c, text in enumerate(row):
-                self._table.setItem(r, c, QTableWidgetItem(text))
-                if text:
-                    filled += 1
+        self._table.blockSignals(True)
+        try:
+            for r, row in enumerate(cells):
+                for c, text in enumerate(row):
+                    self._table.setItem(r, c, QTableWidgetItem(text))
+                    if text:
+                        filled += 1
+        finally:
+            self._table.blockSignals(False)
+        self._validate_table()
         self.statusBar().showMessage(f"OCR grid: {filled} cells with text.", 8000)
         if filled == 0:
             QMessageBox.information(
@@ -1212,6 +1238,76 @@ class MainWindow(QMainWindow):
         self._close_ocr_progress()
         self.statusBar().showMessage("OCR grid failed.", 8000)
         QMessageBox.warning(self, "OCR grid", message or "PaddleOCR failed.")
+
+    def _on_table_item_changed(self, _item: QTableWidgetItem) -> None:
+        self._validate_table()
+
+    def _validate_table(self) -> None:
+        """Run configured project validations on every row and highlight failing cells."""
+        overlay = self._pdf_panel.overlay()
+        rows = self._table.rowCount()
+        cols = self._table.columnCount()
+        if rows == 0 or cols == 0:
+            overlay.clear_invalid_cells()
+            return
+
+        project_config = self._project.config if self._project is not None else {}
+        pv = ProjectValidations(project_config)
+
+        col_headers: list[str] = []
+        name_to_col: dict[str, int] = {}
+        for c in range(cols):
+            header_item = self._table.horizontalHeaderItem(c)
+            header = header_item.text().strip() if header_item is not None else f"Col {c + 1}"
+            col_headers.append(header)
+            name_to_col[header] = c
+            name_to_col[f"Col {c + 1}"] = c
+            name_to_col[f"col_{c + 1}"] = c
+
+        page_num = self._pdf_panel.page_index() + 1
+        field_to_page = {name: page_num for name in name_to_col}
+        invalid_cells: dict[tuple[int, int], str] = {}
+
+        self._table.blockSignals(True)
+        try:
+            default_brush = QBrush()
+            for r in range(rows):
+                field_values: dict[str, str] = {}
+                for c in range(cols):
+                    item = self._table.item(r, c)
+                    text = item.text() if item is not None else ""
+                    if item is not None:
+                        item.setBackground(default_brush)
+                        item.setForeground(default_brush)
+                        item.setToolTip("")
+                    field_values[col_headers[c]] = text
+                    field_values[f"Col {c + 1}"] = text
+                    field_values[f"col_{c + 1}"] = text
+
+                if not pv.has_rules():
+                    continue
+
+                failures = pv.run_validations(
+                    row_index=r,
+                    field_values=field_values,
+                    field_to_page=field_to_page,
+                )
+                for _page, field_name, message in failures:
+                    c = name_to_col.get(field_name)
+                    if c is None:
+                        continue
+                    item = self._table.item(r, c)
+                    if item is None:
+                        item = QTableWidgetItem("")
+                        self._table.setItem(r, c, item)
+                    item.setBackground(QBrush(_INVALID_CELL_BG))
+                    item.setForeground(QBrush(_INVALID_CELL_FG))
+                    item.setToolTip(message)
+                    invalid_cells[(r, c)] = message
+        finally:
+            self._table.blockSignals(False)
+
+        overlay.set_invalid_cells(invalid_cells)
 
     def closeEvent(self, event) -> None:
         self._ocr_batch_worker.cancel()

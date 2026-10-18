@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QPoint, Qt, pyqtSignal, QRectF
-from PyQt6.QtGui import QBrush, QMouseEvent, QPainter, QPen
+from PyQt6.QtGui import QBrush, QColor, QMouseEvent, QPainter, QPen
 from PyQt6.QtWidgets import QWidget
 
 
@@ -30,12 +30,15 @@ class GridOverlay(QWidget):
         self._region_anchor: tuple[float, float] | None = None
         self._region_drag: tuple[float, float] | None = None
         self._text_rects: list[tuple[float, float, float, float]] = []
+        self._invalid_cells: dict[tuple[int, int], str] = {}
 
     def reset(self) -> None:
         self._row_fracs = []
         self._col_fracs = []
         self._grid_visible = False
         self._text_rects = []
+        self._invalid_cells = {}
+        self.setToolTip("")
         self._region = None
         self._draw_region_active = False
         self._region_anchor = None
@@ -75,6 +78,8 @@ class GridOverlay(QWidget):
         return (rect.x(), rect.y(), rect.x() + rect.width(), rect.y() + rect.height())
 
     def set_grid_dimensions(self, rows: int, cols: int) -> None:
+        self._invalid_cells = {}
+        self.setToolTip("")
         if rows < 1 or cols < 1:
             self._row_fracs = []
             self._col_fracs = []
@@ -107,7 +112,27 @@ class GridOverlay(QWidget):
     def has_text_rects(self) -> bool:
         return bool(self._text_rects)
 
+    def set_invalid_cells(
+        self, cells: dict[tuple[int, int], str] | set[tuple[int, int]]
+    ) -> None:
+        """Mark ``(row, col)`` cells as failing validation (drawn in red on the grid)."""
+        if isinstance(cells, dict):
+            self._invalid_cells = dict(cells)
+        else:
+            self._invalid_cells = {rc: "" for rc in cells}
+        if not self._invalid_cells:
+            self.setToolTip("")
+        self.update()
+
+    def clear_invalid_cells(self) -> None:
+        if self._invalid_cells:
+            self._invalid_cells = {}
+            self.setToolTip("")
+            self.update()
+
     def set_row_fracs(self, fracs: list[float]) -> None:
+        self._invalid_cells = {}
+        self.setToolTip("")
         if len(fracs) < 2:
             self._row_fracs = []
         else:
@@ -116,6 +141,8 @@ class GridOverlay(QWidget):
         self.grid_changed.emit()
 
     def set_col_fracs(self, fracs: list[float]) -> None:
+        self._invalid_cells = {}
+        self.setToolTip("")
         if len(fracs) < 2:
             self._col_fracs = []
         else:
@@ -179,6 +206,23 @@ class GridOverlay(QWidget):
         if not self._row_fracs and not self._col_fracs:
             return
 
+        if (
+            self._invalid_cells
+            and len(self._row_fracs) >= 2
+            and len(self._col_fracs) >= 2
+        ):
+            n_rows = len(self._row_fracs) - 1
+            n_cols = len(self._col_fracs) - 1
+            invalid_fill = QBrush(QColor(255, 0, 0, 75))
+            invalid_pen = QPen(QColor(220, 0, 0), 2, Qt.PenStyle.SolidLine)
+            painter.setPen(invalid_pen)
+            painter.setBrush(invalid_fill)
+            for r, c in self._invalid_cells:
+                if 0 <= r < n_rows and 0 <= c < n_cols:
+                    x0, y0, x1, y1 = self.cell_widget_rect(r, c)
+                    painter.drawRect(QRectF(x0, y0, x1 - x0, y1 - y0))
+            painter.setBrush(QBrush(Qt.GlobalColor.transparent))
+
         grid_pen = QPen(Qt.GlobalColor.red, 2, Qt.PenStyle.DashLine)
         painter.setPen(grid_pen)
         rx, ry, rw, rh = region.x(), region.y(), region.width(), region.height()
@@ -219,6 +263,18 @@ class GridOverlay(QWidget):
         for col in range(len(self._col_fracs) - 1):
             if self._col_fracs[col] <= frac <= self._col_fracs[col + 1]:
                 return col
+        return None
+
+    def _row_at_y(self, y: float, region: QRectF) -> int | None:
+        rh = region.height()
+        if rh <= 0 or len(self._row_fracs) < 2:
+            return None
+        frac = (y - region.y()) / rh
+        if frac < 0.0 or frac > 1.0:
+            return None
+        for row in range(len(self._row_fracs) - 1):
+            if self._row_fracs[row] <= frac <= self._row_fracs[row + 1]:
+                return row
         return None
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
@@ -274,6 +330,16 @@ class GridOverlay(QWidget):
             return
 
         if self._drag is None or not self._grid_visible or self._region is None:
+            if self._invalid_cells and self._grid_visible and self._region is not None:
+                region = self._region_rect_px()
+                msg = ""
+                if region is not None and region.contains(pos):
+                    r_idx = self._row_at_y(pos.y(), region)
+                    c_idx = self._col_at_x(pos.x(), region)
+                    if r_idx is not None and c_idx is not None:
+                        msg = self._invalid_cells.get((r_idx, c_idx), "")
+                if self.toolTip() != msg:
+                    self.setToolTip(msg)
             return
 
         region = self._region_rect_px()

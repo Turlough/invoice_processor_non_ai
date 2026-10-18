@@ -204,6 +204,13 @@ class Project:
         self.config["col-fracs"] = [float(v) for v in fracs]
         self.save()
 
+    def validations(self) -> list[dict]:
+        """Project-level validation rules from ``project_config.json``."""
+        raw = self.config.get("validations")
+        if not isinstance(raw, list):
+            return []
+        return [entry for entry in raw if isinstance(entry, dict)]
+
     def list_batches(self) -> list[Path]:
         """Subdirectories of the data directory, each a batch of PDFs."""
         root = self.data_directory
