@@ -47,8 +47,8 @@ from invoice_app.pdf_ocr import (
 )
 from invoice_app.pdf_panel import PdfPanel
 from invoice_app.pdf_text import Word, words_on_page
-from invoice_app.projects import AppState, ConfigError, Project, list_projects
-from invoice_app.validation import ProjectValidations
+from invoice_app.suppliers import AppState, ConfigError, Supplier, list_suppliers
+from invoice_app.validation import SupplierValidations
 
 _INVALID_CELL_BG = QColor(255, 210, 210)
 _INVALID_CELL_FG = QColor(140, 0, 0)
@@ -238,7 +238,7 @@ class MainWindow(QMainWindow):
         self.resize(1280, 800)
 
         self._folder: Path | None = None
-        self._project: Project | None = None
+        self._supplier: Supplier | None = None
         self._state = AppState.load()
         self._ocr_busy = False
         self._ocr_progress: QProgressDialog | None = None
@@ -304,8 +304,8 @@ class MainWindow(QMainWindow):
 
     def _build_menus(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
-        self._project_menu = file_menu.addMenu("&Project")
-        self._project_menu.aboutToShow.connect(self._populate_project_menu)
+        self._supplier_menu = file_menu.addMenu("&Supplier")
+        self._supplier_menu.aboutToShow.connect(self._populate_supplier_menu)
         self._batch_menu = file_menu.addMenu("Load &batch")
         self._batch_menu.aboutToShow.connect(self._populate_batch_menu)
         file_menu.addSeparator()
@@ -335,51 +335,51 @@ class MainWindow(QMainWindow):
         infer_grid = read_menu.addAction("&Infer grid")
         infer_grid.triggered.connect(lambda: self._infer_grid())
 
-    def _populate_project_menu(self) -> None:
-        self._project_menu.clear()
+    def _populate_supplier_menu(self) -> None:
+        self._supplier_menu.clear()
         try:
-            names = list_projects()
+            names = list_suppliers()
         except ConfigError as exc:
-            action = self._project_menu.addAction(str(exc))
+            action = self._supplier_menu.addAction(str(exc))
             action.setEnabled(False)
             return
         if not names:
-            action = self._project_menu.addAction("(no projects)")
+            action = self._supplier_menu.addAction("(no suppliers)")
             action.setEnabled(False)
             return
         for name in names:
-            action = self._project_menu.addAction(name)
+            action = self._supplier_menu.addAction(name)
             action.setCheckable(True)
             action.setChecked(
-                self._project is not None and self._project.name == name
+                self._supplier is not None and self._supplier.name == name
             )
             action.triggered.connect(
-                lambda _checked=False, n=name: self._select_project(n)
+                lambda _checked=False, n=name: self._select_supplier(n)
             )
 
-    def _select_project(self, name: str) -> None:
+    def _select_supplier(self, name: str) -> None:
         try:
-            project = Project.load(name)
+            supplier = Supplier.load(name)
         except (ConfigError, OSError) as exc:
-            QMessageBox.warning(self, "Project", str(exc))
+            QMessageBox.warning(self, "Supplier", str(exc))
             return
-        if project.data_directory is None:
+        if supplier.data_directory is None:
             directory = QFileDialog.getExistingDirectory(
                 self,
-                f"Choose the data directory for project “{name}”",
+                f"Choose the data directory for supplier “{name}”",
             )
             if not directory:
                 return
-            project.set_data_directory(Path(directory))
-        changing = self._project is None or self._project.name != project.name
-        self._project = project
-        self._state.project = project.name
+            supplier.set_data_directory(Path(directory))
+        changing = self._supplier is None or self._supplier.name != supplier.name
+        self._supplier = supplier
+        self._state.supplier = supplier.name
         if changing:
             self._close_batch()
         else:
             self._save_state()
         self.statusBar().showMessage(
-            f"Project: {name} — data directory: {project.data_directory}", 8000
+            f"Supplier: {name} — data directory: {supplier.data_directory}", 8000
         )
 
     def _close_batch(self) -> None:
@@ -399,19 +399,19 @@ class MainWindow(QMainWindow):
 
     def _populate_batch_menu(self) -> None:
         self._batch_menu.clear()
-        project = self._project
-        if project is None:
-            action = self._batch_menu.addAction("(choose a project first)")
+        supplier = self._supplier
+        if supplier is None:
+            action = self._batch_menu.addAction("(choose a supplier first)")
             action.setEnabled(False)
             return
-        root = project.data_directory
+        root = supplier.data_directory
         if root is None or not root.is_dir():
             action = self._batch_menu.addAction(
                 f"(data directory not found: {root})"
             )
             action.setEnabled(False)
             return
-        batches = project.list_batches()
+        batches = supplier.list_batches()
         if not batches:
             action = self._batch_menu.addAction("(no batches)")
             action.setEnabled(False)
@@ -458,25 +458,25 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Could not save app state: {exc}", 8000)
 
     def _restore_state(self) -> None:
-        """Reopen the last project, batch and PDF. Never prompts or raises."""
+        """Reopen the last supplier, batch and PDF. Never prompts or raises."""
         state = self._state
-        if not state.project:
+        if not state.supplier:
             return
         try:
-            if state.project not in list_projects():
+            if state.supplier not in list_suppliers():
                 return
-            project = Project.load(state.project)
+            supplier = Supplier.load(state.supplier)
         except (ConfigError, OSError):
             return
-        self._project = project
-        root = project.data_directory
+        self._supplier = supplier
+        root = supplier.data_directory
         if root is None or not root.is_dir():
-            self.statusBar().showMessage(f"Project: {project.name} (restored)", 8000)
+            self.statusBar().showMessage(f"Supplier: {supplier.name} (restored)", 8000)
             return
-        batches = {p.name: p for p in project.list_batches()}
+        batches = {p.name: p for p in supplier.list_batches()}
         folder = batches.get(state.batch or "")
         if folder is None:
-            self.statusBar().showMessage(f"Project: {project.name} (restored)", 8000)
+            self.statusBar().showMessage(f"Supplier: {supplier.name} (restored)", 8000)
             return
         self._load_batch(folder, select_name=state.pdf)
 
@@ -502,7 +502,7 @@ class MainWindow(QMainWindow):
         if doc is None:
             return regions
         hints = self._infer_hints()
-        x_bounds = self._project.table_x_range() if self._project is not None else None
+        x_bounds = self._supplier.table_x_range() if self._supplier is not None else None
         updated = dict(regions)
         for page_idx in range(len(doc)):
             if page_idx in updated:
@@ -543,11 +543,11 @@ class MainWindow(QMainWindow):
         self._auto_apply_layout_after_region()
 
     def _auto_apply_layout_after_region(self) -> None:
-        """When a page has a table region, apply project col-fracs and infer if OCR exists."""
+        """When a page has a table region, apply supplier col-fracs and infer if OCR exists."""
         overlay = self._pdf_panel.overlay()
         if not overlay.has_region():
             return
-        saved = self._project.col_fracs() if self._project is not None else None
+        saved = self._supplier.col_fracs() if self._supplier is not None else None
         if saved:
             self._pdf_panel.draw_column_grid(saved)
         if self._table_words is not None:
@@ -624,7 +624,7 @@ class MainWindow(QMainWindow):
             return
         pw, ph = self._pdf_panel.page_size_pdf()
         hints = self._infer_hints()
-        x_bounds = self._project.table_x_range() if self._project is not None else None
+        x_bounds = self._supplier.table_x_range() if self._supplier is not None else None
         detected = infer_table_region(
             words, (0.0, 0.0), (pw, ph), hints, x_bounds=x_bounds
         )
@@ -658,7 +658,7 @@ class MainWindow(QMainWindow):
                 "Draw the line-item table area first (Layout → Table region…).",
             )
             return
-        saved = self._project.col_fracs() if self._project is not None else None
+        saved = self._supplier.col_fracs() if self._supplier is not None else None
         if saved:
             self._pdf_panel.draw_column_grid(saved)
         else:
@@ -666,11 +666,11 @@ class MainWindow(QMainWindow):
         self._resize_table()
 
     def _save_column_fracs(self) -> None:
-        if self._project is None:
+        if self._supplier is None:
             QMessageBox.information(
                 self,
                 "Save column fracs",
-                "Choose a project first (File → Project).",
+                "Choose a supplier first (File → Supplier).",
             )
             return
         overlay = self._pdf_panel.overlay()
@@ -682,12 +682,12 @@ class MainWindow(QMainWindow):
                 "Draw a grid first (Layout → Draw grid) and align the column lines.",
             )
             return
-        self._project.set_col_fracs(fracs)
+        self._supplier.set_col_fracs(fracs)
         norm = self._pdf_panel.upright_page_region()
         if norm is not None:
-            self._project.set_table_x_range(norm[0], norm[2])
+            self._supplier.set_table_x_range(norm[0], norm[2])
         self.statusBar().showMessage(
-            f"Saved {len(fracs) - 1} column(s) to project “{self._project.name}”.",
+            f"Saved {len(fracs) - 1} column(s) to supplier “{self._supplier.name}”.",
             8000,
         )
 
@@ -704,7 +704,7 @@ class MainWindow(QMainWindow):
         cols = len(col_fracs) - 1 if len(col_fracs) >= 2 else self._pdf_panel.num_cols()
         self._table.setRowCount(rows)
         self._table.setColumnCount(cols)
-        names = self._project.column_names() if self._project is not None else []
+        names = self._supplier.column_names() if self._supplier is not None else []
         headers = [
             names[c] if c < len(names) else f"Col {c + 1}"
             for c in range(cols)
@@ -714,11 +714,11 @@ class MainWindow(QMainWindow):
             self._table.setVerticalHeaderItem(r, QTableWidgetItem(str(r + 1)))
 
     def _on_column_context(self, col_index: int, global_pos: QPoint) -> None:
-        if self._project is None:
+        if self._supplier is None:
             QMessageBox.information(
                 self,
                 "Column settings",
-                "Choose a project first (File → Project) to configure columns.",
+                "Choose a supplier first (File → Supplier) to configure columns.",
             )
             return
         overlay = self._pdf_panel.overlay()
@@ -727,7 +727,7 @@ class MainWindow(QMainWindow):
         if col_index < 0 or col_index >= n_cols:
             return
 
-        current_name, current_anchor = self._project.column_entry(col_index, n_cols)
+        current_name, current_anchor = self._supplier.column_entry(col_index, n_cols)
 
         dialog = QDialog(self)
         dialog.setWindowTitle(f"Column {col_index + 1} settings")
@@ -755,14 +755,14 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            self._project.set_column_entry(
+            self._supplier.set_column_entry(
                 col_index,
                 name=name_edit.text(),
                 anchor=anchor_check.isChecked(),
                 n_cols=n_cols,
             )
         except OSError as exc:
-            QMessageBox.warning(self, "Column settings", f"Could not save project config:\n{exc}")
+            QMessageBox.warning(self, "Column settings", f"Could not save supplier config:\n{exc}")
             return
 
         self._resize_table()
@@ -773,19 +773,19 @@ class MainWindow(QMainWindow):
         state_str = "anchor" if anchor_check.isChecked() else "non-anchor"
         label = name_edit.text().strip() or f"Col {col_index + 1}"
         self.statusBar().showMessage(
-            f"Saved column {col_index + 1} (“{label}”, {state_str}) to project “{self._project.name}”.",
+            f"Saved column {col_index + 1} (“{label}”, {state_str}) to supplier “{self._supplier.name}”.",
             8000,
         )
 
     def _infer_hints(self) -> InferHints:
-        project = self._project
+        supplier = self._supplier
         names: list[str] = []
         col_fracs: list[float] | None = None
         anchor_cols: list[bool] | None = None
         overlay_cols = self._pdf_panel.overlay().col_fracs()
-        if project is not None:
-            names = project.column_names()
-            col_fracs = project.col_fracs()
+        if supplier is not None:
+            names = supplier.column_names()
+            col_fracs = supplier.col_fracs()
         if not col_fracs and len(overlay_cols) >= 2:
             col_fracs = overlay_cols
         if col_fracs and len(col_fracs) >= 2:
@@ -794,8 +794,8 @@ class MainWindow(QMainWindow):
             n_cols = len(names)
         else:
             n_cols = self._pdf_panel.num_cols()
-        if project is not None:
-            anchor_cols = project.anchor_cols(n_cols)
+        if supplier is not None:
+            anchor_cols = supplier.anchor_cols(n_cols)
         return InferHints(
             n_cols=n_cols,
             header_row_count=0,
@@ -1264,7 +1264,7 @@ class MainWindow(QMainWindow):
         self._validate_table()
 
     def _validate_table(self) -> None:
-        """Run configured project validations on every row and highlight failing cells."""
+        """Run configured supplier validations on every row and highlight failing cells."""
         overlay = self._pdf_panel.overlay()
         rows = self._table.rowCount()
         cols = self._table.columnCount()
@@ -1272,8 +1272,8 @@ class MainWindow(QMainWindow):
             overlay.clear_invalid_cells()
             return
 
-        project_config = self._project.config if self._project is not None else {}
-        pv = ProjectValidations(project_config)
+        supplier_config = self._supplier.config if self._supplier is not None else {}
+        sv = SupplierValidations(supplier_config)
 
         col_headers: list[str] = []
         name_to_col: dict[str, int] = {}
@@ -1305,10 +1305,10 @@ class MainWindow(QMainWindow):
                     field_values[f"Col {c + 1}"] = text
                     field_values[f"col_{c + 1}"] = text
 
-                if not pv.has_rules():
+                if not sv.has_rules():
                     continue
 
-                failures = pv.run_validations(
+                failures = sv.run_validations(
                     row_index=r,
                     field_values=field_values,
                     field_to_page=field_to_page,

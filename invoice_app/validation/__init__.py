@@ -1,10 +1,10 @@
 """Validation package: config-driven line-item validation rules."""
 
-from .project_validations import ProjectValidations
-from .strategies import PROJECT_VALIDATION_REGISTRY, ValidationContext
+from .strategies import SUPPLIER_VALIDATION_REGISTRY, ValidationContext
+from .supplier_validations import SupplierValidations
 
 __all__ = [
-    "ProjectValidations",
+    "SupplierValidations",
     "ValidationContext",
-    "PROJECT_VALIDATION_REGISTRY",
+    "SUPPLIER_VALIDATION_REGISTRY",
 ]

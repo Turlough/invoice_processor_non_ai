@@ -12,8 +12,8 @@ Reduce manual grid alignment for homogeneous supplier batches by:
 
 1. Clustering positioned text boxes into **rows** and **columns**.
 2. Merging **wrapped description** lines into single **data rows**.
-3. Emitting the same geometry the UI already uses: **`row_fracs`**, **`col_fracs`** (0..1 inside the table region), plus **`line-items`** keyed by project column names.
-4. Learning stable **column gutters** at project level; keeping **row count** per document.
+3. Emitting the same geometry the UI already uses: **`row_fracs`**, **`col_fracs`** (0..1 inside the table region), plus **`line-items`** keyed by supplier column names.
+4. Learning stable **column gutters** at supplier level; keeping **row count** per document.
 
 Manual draw/drag in the UI remains the fallback and ground truth when inference is wrong.
 
@@ -23,10 +23,10 @@ Manual draw/drag in the UI remains the fallback and ground truth when inference 
 
 | Layer | File | Location |
 |-------|------|----------|
-| Project | `project_config.json` | `CONFIG_DIRECTORY/<project>/` |
+| Supplier | `supplier_config.json` | `CONFIG_DIRECTORY/<supplier>/` |
 | Document | `<pdf-basename>.json` | Same directory as the PDF (e.g. `batch/INV-001.pdf` → `batch/INV-001.json`) |
 
-**Project (shared layout / schema)**
+**Supplier (shared layout / schema)**
 
 - `schema-version`
 - `data-directory` (existing)
@@ -40,10 +40,10 @@ Manual draw/drag in the UI remains the fallback and ground truth when inference 
 
 - `schema-version`
 - `page` — 0-based
-- `table-region` — optional full `[x0, y0, x1, y1]` normalised override; `null` = use project band + computed bottom
+- `table-region` — optional full `[x0, y0, x1, y1]` normalised override; `null` = use supplier band + computed bottom
 - `row-fracs` — inside table region; length = `header-row-count + row-count + 1`
 - `row-count` — **data rows only** (no header)
-- `line-items[]` — one object per data row; keys = project `columns[].name`; cell values as strings until parsed by `datatype`
+- `line-items[]` — one object per data row; keys = supplier `columns[].name`; cell values as strings until parsed by `datatype`
 
 **Coordinates**
 
@@ -57,7 +57,7 @@ Manual draw/drag in the UI remains the fallback and ground truth when inference 
 Invoices rarely show visible rules. Detect **alignment** of OCR/text boxes:
 
 - **Rows:** cluster by vertical centre (`cy`); split when gap > threshold × median line height.
-- **Columns:** assign by horizontal centre (`cx`) using project `col-fracs` prior, or discover gutters from numeric column alignment; refine per document; **median across batch** for project defaults.
+- **Columns:** assign by horizontal centre (`cx`) using supplier `col-fracs` prior, or discover gutters from numeric column alignment; refine per document; **median across batch** for supplier defaults.
 - **Wrapped descriptions:** merge consecutive OCR bands when only the left column has text and the previous band has numeric columns populated.
 
 **Reuse existing code**
@@ -69,7 +69,7 @@ Invoices rarely show visible rules. Detect **alignment** of OCR/text boxes:
 **Explicitly defer**
 
 - OpenCV morphological / projection grid finding (optional fallback later).
-- Full-page table detection without a coarse band (user draw or project `table-band` + generous bottom in v1).
+- Full-page table detection without a coarse band (user draw or supplier `table-band` + generous bottom in v1).
 - New OCR engines (AGENTS.md).
 
 ---
@@ -128,7 +128,7 @@ Track progress by marking `[x]` when done.
 
 ### Step 2 — Column inference
 
-- [ ] With project prior: assign by `nx`, refine interior boundaries (median gutter positions on data rows)
+- [ ] With supplier prior: assign by `nx`, refine interior boundaries (median gutter positions on data rows)
 - [ ] Cold start (no prior): numeric `x1` clustering for right columns; description left
 - [ ] Enforce `MIN_COL_WIDTH_FRAC`; output length `n_cols + 1`
 - [ ] Tests: three-column fixture → stable `col_fracs`
@@ -162,10 +162,10 @@ Track progress by marking `[x]` when done.
 ### Step 5 — Batch column learning
 
 - [ ] Script or tool: run infer on many PDFs in a batch; collect per-doc `col_fracs`
-- [ ] `median_col_fracs` → update project `col-fracs` (manual review before save)
-- [ ] Document when to keep per-doc override (large deviation from project median)
+- [ ] `median_col_fracs` → update supplier `col-fracs` (manual review before save)
+- [ ] Document when to keep per-doc override (large deviation from supplier median)
 
-**Done when:** project config stabilises columns for a batch; new docs need mainly row adjustment.
+**Done when:** supplier config stabilises columns for a batch; new docs need mainly row adjustment.
 
 ---
 
@@ -200,7 +200,7 @@ Text-layer PDFs: group `words_on_page` into synthetic lines (same `cy` within to
 
 - **Padding:** `region_image` clip pad can add boxes outside logical table; filter by coordinates relative to unpadded `size`.
 - **Header in grid:** UI row count includes header; **`row-count` in JSON is data-only**; `row_fracs` includes header bands.
-- **Scan variability:** project `row-height-pt` / `row-height-frac` is not reliable across operators; prefer per-doc `row-fracs` after first infer or manual drag.
+- **Scan variability:** supplier `row-height-pt` / `row-height-frac` is not reliable across operators; prefer per-doc `row-fracs` after first infer or manual drag.
 - **Paddle thread:** keep OCR on one worker thread (existing constraint).
 - **Page index:** reads today use page 0; sidecar `page` for future multi-page.
 

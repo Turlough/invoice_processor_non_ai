@@ -1,21 +1,21 @@
-"""Project-level validations: config-driven business rules per project."""
+"""Supplier-level validations: config-driven business rules per supplier."""
 
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-from .strategies import PROJECT_VALIDATION_REGISTRY, ValidationContext
+from .strategies import SUPPLIER_VALIDATION_REGISTRY, ValidationContext
 
 logger = logging.getLogger(__name__)
 
 
-class ProjectValidations:
-    """Runs configured project validations against line-item rows."""
+class SupplierValidations:
+    """Runs configured supplier validations against line-item rows."""
 
-    def __init__(self, project_config: dict[str, Any]) -> None:
-        self.project_config = project_config
-        raw_validations = project_config.get("validations", [])
+    def __init__(self, supplier_config: dict[str, Any]) -> None:
+        self.supplier_config = supplier_config
+        raw_validations = supplier_config.get("validations", [])
         self.validations: list[dict[str, Any]] = (
             [r for r in raw_validations if isinstance(r, dict)]
             if isinstance(raw_validations, list)
@@ -31,7 +31,7 @@ class ProjectValidations:
         field_values: dict[str, Any],
         field_to_page: dict[str, int] | None = None,
     ) -> list[tuple[int, str, str]]:
-        """Run all project validations for one row.
+        """Run all supplier validations for one row.
 
         Returns a list of ``(page, field_name, message)`` tuples, deduplicated
         by ``(page, field_name)``.
@@ -44,7 +44,7 @@ class ProjectValidations:
             if not strategy_name:
                 continue
 
-            fn = PROJECT_VALIDATION_REGISTRY.get(strategy_name)
+            fn = SUPPLIER_VALIDATION_REGISTRY.get(strategy_name)
             if fn is None:
                 logger.warning("Unknown validation strategy: %s", strategy_name)
                 continue

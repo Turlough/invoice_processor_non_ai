@@ -245,7 +245,7 @@ def _strategy_regex(ctx: ValidationContext) -> list[tuple[int, str, str]]:
     return faults
 
 
-PROJECT_VALIDATION_REGISTRY: dict[
+SUPPLIER_VALIDATION_REGISTRY: dict[
     str, Callable[[ValidationContext], list[tuple[int, str, str]]]
 ] = {
     "hours-times-rate-equals-total": _strategy_hours_times_rate_equals_total,

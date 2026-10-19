@@ -1020,7 +1020,7 @@ def infer_table_region(
     """Detect the normalized ``(x0, y0, x1, y1)`` line-item table region on a page.
 
     Returns ``None`` when the page contains no line-item rows matching the
-    project layout (e.g. T&C pages, bank-detail backs, or timesheet backups).
+    supplier layout (e.g. T&C pages, bank-detail backs, or timesheet backups).
     """
     ox, oy = origin
     rw, rh = size

@@ -465,7 +465,7 @@ class PdfPanel(QWidget):
         self._sync_overlay_geometry()
 
     def draw_column_grid(self, col_fracs: list[float]) -> None:
-        """Show vertical dividers only (project-saved column ratios)."""
+        """Show vertical dividers only (supplier-saved column ratios)."""
         self._overlay.set_row_fracs([])
         self._overlay.set_col_fracs(col_fracs)
         self._overlay.set_visible_grid(True)

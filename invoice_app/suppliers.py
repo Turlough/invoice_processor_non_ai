@@ -1,7 +1,7 @@
-"""Project configuration: CONFIG_DIRECTORY, project_config.json, batches.
+"""Supplier configuration: CONFIG_DIRECTORY, supplier_config.json, batches.
 
-A *project* is a subdirectory of CONFIG_DIRECTORY holding a
-``project_config.json``. The config records the project's *data directory* —
+A *supplier* is a subdirectory of CONFIG_DIRECTORY holding a
+``supplier_config.json``. The config records the supplier's *data directory* —
 the root folder whose subdirectories are batches of similar invoice PDFs.
 """
 
@@ -15,7 +15,7 @@ from pathlib import Path
 from platformdirs import user_config_dir
 
 APP_NAME = "invoice_processor"
-CONFIG_FILE = "project_config.json"
+CONFIG_FILE = "supplier_config.json"
 APP_CONFIG_FILE = "app_config.json"
 DATA_DIRECTORY_KEY = "data-directory"
 
@@ -36,13 +36,13 @@ def config_root() -> Path:
     return root
 
 
-def list_projects() -> list[str]:
-    """Names of the project directories inside CONFIG_DIRECTORY."""
+def list_suppliers() -> list[str]:
+    """Names of the supplier directories inside CONFIG_DIRECTORY."""
     return sorted(p.name for p in config_root().iterdir() if p.is_dir())
 
 
 @dataclass
-class Project:
+class Supplier:
     name: str
     directory: Path
     config: dict = field(default_factory=dict)
@@ -52,11 +52,11 @@ class Project:
         return self.directory / CONFIG_FILE
 
     @classmethod
-    def load(cls, name: str) -> "Project":
-        """Open a project, creating project_config.json if it is missing."""
+    def load(cls, name: str) -> "Supplier":
+        """Open a supplier, creating supplier_config.json if it is missing."""
         directory = config_root() / name
         if not directory.is_dir():
-            raise ConfigError(f"Project directory not found: {directory}")
+            raise ConfigError(f"Supplier directory not found: {directory}")
         config: dict = {}
         path = directory / CONFIG_FILE
         if path.is_file():
@@ -66,10 +66,10 @@ class Project:
                     config = data
             except (OSError, ValueError):
                 config = {}
-        project = cls(name=name, directory=directory, config=config)
+        supplier = cls(name=name, directory=directory, config=config)
         if not path.exists():
-            project.save()
-        return project
+            supplier.save()
+        return supplier
 
     def save(self) -> None:
         self.config_path.write_text(
@@ -88,7 +88,7 @@ class Project:
         self.save()
 
     def column_names(self) -> list[str]:
-        """Column `name` values from project config (visualisation / infer hints)."""
+        """Column `name` values from supplier config (visualisation / infer hints)."""
         raw = self.config.get("columns")
         if not isinstance(raw, list):
             return []
@@ -223,7 +223,7 @@ class Project:
         self.save()
 
     def validations(self) -> list[dict]:
-        """Project-level validation rules from ``project_config.json``."""
+        """Supplier-level validation rules from ``supplier_config.json``."""
         raw = self.config.get("validations")
         if not isinstance(raw, list):
             return []
@@ -249,7 +249,7 @@ def user_state_path() -> Path:
 class AppState:
     """Last-used location, so the app reopens where the user left off."""
 
-    project: str | None = None
+    supplier: str | None = None
     batch: str | None = None
     pdf: str | None = None
 
@@ -261,7 +261,7 @@ class AppState:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
                     return cls(
-                        project=data.get("project") or None,
+                        supplier=data.get("supplier") or None,
                         batch=data.get("batch") or None,
                         pdf=data.get("pdf") or None,
                     )
