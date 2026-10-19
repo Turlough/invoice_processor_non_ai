@@ -83,6 +83,7 @@ Default section order:
 
 When the user requests a durable behavior change, record it here or in the relevant child AGENTS.md
 
+- **GDPR & EU AI Act — External Directory Access**: Agents must **always** ask explicit permission from the user before reading, listing, searching, or otherwise exploring any directory or file outside the current repository root (`c:\Users\tcowman.DIGIDOCS\py\invoice_processor`). Permission is **never** implicit (even if paths are referenced in `.env`, `CONFIG_DIRECTORY`, `data-directory`, `app_config.json`, or user prompts). Folders outside the project may contain customer invoices, OCR caches, and personal data (PII) that must not be exposed.
 - Do not add other OCR engines, cloud APIs, or supplier templates unless the user asks; grid and batch OCR stay on PaddleOCR (`paddlepaddle==3.2.2` on CPU with oneDNN disabled; 3.3.x CPU oneDNN breaks repeated inference when image sizes change).
 - Do not create git commits unless the user explicitly requests them.
 - Drawn table regions cover line items only (column headers sit above the region and may be absent on later pages), so every inferred band inside the region is a data row starting at table row 1.
