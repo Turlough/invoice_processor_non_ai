@@ -22,7 +22,7 @@ PyQt6 application shell, PDF rendering and deskew preview, draggable table regio
 - **Coordinates & deskew (`pdf_panel.py`, `grid_overlay.py`)**:
   - Table regions in `<stem>.json` are stored per page in upright-page normalized fractions `0..1`.
   - `GridOverlay` stores `row_fracs` and `col_fracs` as normalized `0..1` fractions inside the table region.
-  - **Layout → Auto deskew** rotates the preview by `-skew_deg` (from `<stem>.ocr.json`) on an expanded canvas so no corner is clipped; `PdfPanel.widget_to_pdf_rect` and `pdf_rect_to_widget` map between preview widget pixels and upright PDF user space.
+  - Opening a PDF, changing page, or finishing **Read → OCR batch** applies each page's `skew-deg` from `<stem>.ocr.json` automatically. The preview rotates by `-skew_deg` on an expanded canvas so no corner is clipped; `PdfPanel.widget_to_pdf_rect` and `pdf_rect_to_widget` map between preview widget pixels and upright PDF user space. Pages with no sidecar skew stay upright.
 - **Grid & column settings (`main_window.py`, `grid_overlay.py`)**:
   - **Layout → Auto-detect region** (and automatic detection on PDF load / after `OCR batch` for pages missing from `<stem>.json`) runs `infer_table_region` and saves the detected upright region to `<stem>.json`.
   - **Layout → Save column fracs** saves `col-fracs` (and `table-x-range` when a region is active) to `project_config.json`.

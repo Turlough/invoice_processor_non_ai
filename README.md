@@ -12,7 +12,7 @@ Limitations to be aware of:
 |-----------|-----------|
 | PDF has a text layer | Align the grid, then **Read → Line items** |
 | PDF is image-only (no text objects) | Align the grid, then **Read → OCR grid** (PaddleOCR) |
-| Skewed scans | **Layout → Auto deskew** levels the page using `skew-deg` from the OCR sidecar. The rotated page is not cropped, and it still fits the preview |
+| Skewed scans | Opening a page levels it from `skew-deg` in the OCR sidecar. The rotated page is not cropped, and it still fits the preview |
 
 ## UI layout
 
@@ -26,7 +26,7 @@ Three panels (horizontal splitter):
 
 - The PDF page **scales to fit** the centre panel by default (**Auto**). Zoom controls — **Auto**, **Height**, **Width**, **−**, **+** — switch between fit modes and manual zoom; scroll bars appear when the page overflows. Page controls (◀ ▶ or the spin box) move through multi-page documents; the grid carries over between pages.
 - Set **Rows** and **Cols** to match the line-item table on the invoice.
-- **Layout → Auto deskew** — when the PDF has an OCR sidecar, level each page using its `skew-deg`. The page is not cropped, and the expanded result is scaled to fit the centre panel.
+- Opening a PDF or changing page levels that page from `skew-deg` in the OCR sidecar, when the sidecar has one. The page is not cropped, and Auto zoom fits the expanded result in the centre panel.
 - **Layout → Table region…** — click and drag on the page to outline the table.
 - **Layout → Draw grid** creates evenly spaced dividers inside the region.
 - **Drag** internal horizontal or vertical lines (not the outer border) so cell boundaries match the printed/OCR layout.

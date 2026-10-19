@@ -279,6 +279,10 @@ class PdfPanel(QWidget):
         self._render_page()
         self._apply_region_for_current_page(clear_grid=False)
 
+    def deskew_angles(self) -> dict[int, float]:
+        """Page index → OCR ``skew-deg`` currently applied to the preview."""
+        return dict(self._deskew_angles)
+
     def page_skew_deg(self) -> float | None:
         """OCR skew for the current page, or None when no angle was supplied."""
         if self._page_index not in self._deskew_angles:

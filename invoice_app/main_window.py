@@ -262,7 +262,6 @@ class MainWindow(QMainWindow):
         self._table_words_origin: tuple[float, float] = (0.0, 0.0)
         self._table_words_size: tuple[float, float] = (1.0, 1.0)
         self._table_words_space: str = "pdf"
-        self._auto_deskew = False
 
         self._file_list = QListWidget()
         self._file_list.currentItemChanged.connect(self._on_file_selected)
@@ -314,10 +313,6 @@ class MainWindow(QMainWindow):
         quit_action.triggered.connect(QApplication.instance().quit)
 
         layout_menu = self.menuBar().addMenu("&Layout")
-        self._deskew_action = layout_menu.addAction("&Auto deskew")
-        self._deskew_action.setCheckable(True)
-        self._deskew_action.triggered.connect(self._toggle_auto_deskew)
-        layout_menu.addSeparator()
         table_region = layout_menu.addAction("&Table region…")
         table_region.triggered.connect(self._table_region)
         auto_region = layout_menu.addAction("Auto-&detect region")
@@ -492,8 +487,7 @@ class MainWindow(QMainWindow):
             regions = self._auto_detect_missing_regions(pdf_path, regions)
             self._pdf_panel.set_page_regions(regions)
             self._pdf_panel.refresh_page_layout()
-        if self._auto_deskew:
-            self._enable_auto_deskew(report=False)
+        self._apply_page_deskew()
         self._apply_cached_ocr_for_current_page()
         self._auto_apply_layout_after_region()
         self._resize_table()
@@ -592,79 +586,18 @@ class MainWindow(QMainWindow):
         self._state.pdf = path.name
         self._save_state()
 
-    def _toggle_auto_deskew(self, _checked: bool = False) -> None:
-        checked = self._deskew_action.isChecked()
-        if not checked:
-            self._auto_deskew = False
-            self._pdf_panel.zoom_to_fit()
-            self._pdf_panel.set_deskew_angles({})
-            self._apply_cached_ocr_for_current_page()
-            self._auto_apply_layout_after_region()
-            self.statusBar().showMessage("Auto deskew off.", 5000)
-            return
-        if self._pdf_panel.document() is None:
-            self._set_deskew_checked(False)
-            QMessageBox.information(self, "Auto deskew", "Load a PDF first.")
-            return
-        if not self._enable_auto_deskew(report=True):
-            return
-        self._apply_cached_ocr_for_current_page()
-        self._auto_apply_layout_after_region()
+    def _apply_page_deskew(self) -> None:
+        """Level the open PDF from each page's sidecar ``skew-deg``.
 
-    def _set_deskew_checked(self, checked: bool) -> None:
-        self._deskew_action.blockSignals(True)
-        self._deskew_action.setChecked(checked)
-        self._deskew_action.blockSignals(False)
-
-    def _enable_auto_deskew(self, *, report: bool) -> bool:
-        """Apply sidecar skew-deg to every page. The preview rotates the other way."""
+        Pages with no OCR skew stay upright. Changing pages uses the angles
+        loaded here; ``PdfPanel`` rotates that page when it renders.
+        """
         pdf_path = self._current_pdf_path()
-        angles = load_skew_by_page(pdf_path) if pdf_path is not None else None
-        if angles is None:
-            self._pdf_panel.set_deskew_angles({})
-            if report:
-                self._auto_deskew = False
-                self._set_deskew_checked(False)
-                QMessageBox.information(
-                    self,
-                    "Auto deskew",
-                    "No OCR information for this PDF.\n"
-                    "Run Read → OCR batch, then try Auto deskew again.",
-                )
-            else:
-                self.statusBar().showMessage(
-                    "Auto deskew: no OCR information for this PDF.", 8000
-                )
-            return False
-        if not angles:
-            self._pdf_panel.set_deskew_angles({})
-            if report:
-                self._auto_deskew = False
-                self._set_deskew_checked(False)
-                QMessageBox.information(
-                    self,
-                    "Auto deskew",
-                    "The OCR sidecar has no skew-deg for this PDF.",
-                )
-            else:
-                self.statusBar().showMessage(
-                    "Auto deskew: OCR sidecar has no skew-deg.", 8000
-                )
-            return False
-        self._auto_deskew = True
-        self._set_deskew_checked(True)
-        self._pdf_panel.zoom_to_fit()
+        loaded = load_skew_by_page(pdf_path) if pdf_path is not None else None
+        angles = loaded or {}
+        if angles == self._pdf_panel.deskew_angles():
+            return
         self._pdf_panel.set_deskew_angles(angles)
-        skew = angles.get(self._pdf_panel.page_index())
-        if skew is None:
-            message = "Auto deskew on. This page has no skew-deg."
-        elif abs(skew) < 0.05:
-            message = f"Auto deskew on. This page is already straight ({skew:.2f}°)."
-        else:
-            message = f"Auto deskew on. Levelled {skew:.2f}° of scan skew."
-        if report or skew is None or abs(skew or 0.0) >= 0.05:
-            self.statusBar().showMessage(message, 8000)
-        return True
 
     def _table_region(self) -> None:
         if self._pdf_panel.document() is None:
@@ -1048,6 +981,7 @@ class MainWindow(QMainWindow):
             regions = self._auto_detect_missing_regions(pdf_path, regions)
             self._pdf_panel.set_page_regions(regions)
             self._pdf_panel.refresh_page_layout()
+        self._apply_page_deskew()
         self._apply_cached_ocr_for_current_page()
         self._auto_apply_layout_after_region()
         self._resize_table()
