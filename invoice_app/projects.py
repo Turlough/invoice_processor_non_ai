@@ -204,6 +204,24 @@ class Project:
         self.config["col-fracs"] = [float(v) for v in fracs]
         self.save()
 
+    def table_x_range(self) -> tuple[float, float] | None:
+        """Optional template horizontal bounds ``(x0, x1)`` in 0..1 page fractions."""
+        raw = self.config.get("table-x-range")
+        if not isinstance(raw, list) or len(raw) != 2:
+            return None
+        try:
+            x0, x1 = float(raw[0]), float(raw[1])
+        except (TypeError, ValueError):
+            return None
+        if 0.0 <= x0 < x1 <= 1.0:
+            return (x0, x1)
+        return None
+
+    def set_table_x_range(self, x0: float, x1: float) -> None:
+        """Persist horizontal table bounds ``(x0, x1)`` in 0..1 page fractions."""
+        self.config["table-x-range"] = [round(float(x0), 4), round(float(x1), 4)]
+        self.save()
+
     def validations(self) -> list[dict]:
         """Project-level validation rules from ``project_config.json``."""
         raw = self.config.get("validations")

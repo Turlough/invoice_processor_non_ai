@@ -86,7 +86,8 @@ When the user requests a durable behavior change, record it here or in the relev
 - Do not add other OCR engines, cloud APIs, or supplier templates unless the user asks; grid and batch OCR stay on PaddleOCR (`paddlepaddle==3.2.2` on CPU with oneDNN disabled; 3.3.x CPU oneDNN breaks repeated inference when image sizes change).
 - Do not create git commits unless the user explicitly requests them.
 - Drawn table regions cover line items only (column headers sit above the region and may be absent on later pages), so every inferred band inside the region is a data row starting at table row 1.
-- When a page has a table region (loaded from `<stem>.json` or newly drawn), automatically apply project `col-fracs` and run grid inference if OCR word data is available for that page.
+- When a PDF is loaded (or after `OCR batch` finishes), any page without a saved region in `<stem>.json` automatically runs `infer_table_region` (`invoice_app/grid_infer.py`) against its `<stem>.ocr.json` words and persists the detected region to `<stem>.json` (returning `None` on non-table pages such as T&Cs or backup timesheets). Users can also trigger **Layout → Auto-detect region** on the current page or adjust manually with **Layout → Table region…**.
+- When a page has a table region (loaded from `<stem>.json`, auto-detected, or newly drawn), automatically apply project `col-fracs` and run grid inference if OCR word data is available for that page.
 - Right-clicking inside a column on the grid opens a column settings dialog (`Name` and `Anchor` checkbox) saved to `columns` in `project_config.json`; anchor columns drive row inference so multi-line or sparse columns do not shift row boundaries.
 - Line-item validations configured under `"validations"` in `project_config.json` run automatically whenever the table is populated or edited, highlighting failing cells in red (with fault tooltip) in both the right-hand table and the PDF grid overlay.
 

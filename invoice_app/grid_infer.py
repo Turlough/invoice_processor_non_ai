@@ -306,7 +306,7 @@ def _classify_anchor_bands(
         ):
             regular_counts.append(len(idxs))
 
-    if regular_counts:
+    if len(regular_counts) >= 2:
         # Take the mode (most common count) among regular full-span columns,
         # breaking ties toward the smaller count (single-line over multi-line).
         freq_map: dict[int, int] = {}
@@ -395,9 +395,31 @@ def _merge_bands_into_logical_rows(
     if header_count >= len(bands):
         return []
     raw_bands = bands[header_count:]
+    ox, _ = origin
+    rw, _ = size
+    n_cols = max(len(col_fracs) - 1, 1)
     data_bands: list[RowBand] = []
     for band in raw_bands:
-        if SUBTOTAL_PATTERN.search(_band_text(band)):
+        if not data_bands:
+            # Strip column-header words that bled across the top edge of the
+            # region on a skewed scan (e.g. "HOURS | RATE | TOTAL" on the right
+            # while Row 1's date already started on the left).
+            kept_words = tuple(
+                w
+                for w in band.words
+                if w.text.strip().lower() not in _BLED_HEADER_WORDS
+            )
+            if not kept_words:
+                continue
+            if len(kept_words) != len(band.words):
+                band = RowBand(
+                    index=band.index,
+                    y0=min(w.y0 for w in kept_words),
+                    y1=max(w.y1 for w in kept_words),
+                    words=kept_words,
+                )
+        occ = _occupied_columns(band, col_fracs, origin, size)
+        if len(occ) < max(4, n_cols - 1) and _is_stop_band(band, ox, rw):
             break
         data_bands.append(band)
     if not data_bands:
@@ -406,7 +428,6 @@ def _merge_bands_into_logical_rows(
     word_heights = [_word_height(w) for b in data_bands for w in b.words]
     line_h = max(_median(word_heights), 1.0)
     max_gap = WRAP_GAP_FACTOR * line_h
-    n_cols = max(len(col_fracs) - 1, 1)
     occ_list = [_occupied_columns(b, col_fracs, origin, size) for b in data_bands]
 
     allowed_anchors: set[int] | None = None
@@ -620,6 +641,18 @@ def infer_from_words(
         row_words = filtered
         col_fracs = _default_col_fracs(n_cols)
 
+    if row_words:
+        min_wy0 = min(w.y0 for w in row_words)
+        med_wh = max(_median([_word_height(w) for w in row_words]), 1.0)
+        row_words = [
+            w
+            for w in row_words
+            if not (
+                (w.y0 - min_wy0) <= 1.2 * med_wh
+                and w.text.strip().lower() in _BLED_HEADER_WORDS
+            )
+        ]
+
     bands = infer_row_bands(row_words, origin, size)
     if not bands:
         return InferResult(
@@ -659,3 +692,497 @@ def infer_from_words(
         header_band_count=len(header_rows),
         header_rows=header_rows,
     )
+
+
+_APPROVAL_STAMP_RE = re.compile(
+    r"(?i)\bstatus\s*:\s*approved\b|\buser\s*:|\bstatus\b.*\bapproved\b"
+)
+
+_TABLE_HEADER_TOKENS = frozenset(
+    {
+        "date",
+        "dates",
+        "day",
+        "description",
+        "details",
+        "activity",
+        "employee",
+        "staff",
+        "name",
+        "candidate",
+        "worker",
+        "person",
+        "position",
+        "grade",
+        "role",
+        "type",
+        "shift",
+        "shifts",
+        "time",
+        "start",
+        "end",
+        "break",
+        "week",
+        "period",
+        "hours",
+        "hrs",
+        "units",
+        "unit",
+        "qty",
+        "quantity",
+        "rate",
+        "rates",
+        "price",
+        "charge",
+        "net",
+        "tax",
+        "vat",
+        "amount",
+        "total",
+        "eur",
+        "authorisor",
+        "half",
+        "pay",
+    }
+)
+
+_TABLE_HEADER_METRIC_TOKENS = frozenset(
+    {
+        "hours",
+        "hrs",
+        "units",
+        "unit",
+        "qty",
+        "quantity",
+        "rate",
+        "rates",
+        "price",
+        "amount",
+        "total",
+        "charge",
+        "net",
+    }
+)
+
+_BLED_HEADER_WORDS = _TABLE_HEADER_METRIC_TOKENS | frozenset(
+    {
+        "date",
+        "name",
+        "position",
+        "time",
+        "description",
+        "details",
+        "activity",
+        "employee",
+        "vat%",
+    }
+)
+
+_STRONG_STOP_RE = re.compile(
+    r"(?i)\b(?:"
+    r"sub\s*total|subtotal|balance\s+due|grand\s+total|invoice\s+total|"
+    r"total\s+eur|total\s+amount|remittance\s+due|remittance\s+advice|"
+    r"total\s*\(\s*excl|total\s*\(\s*incl|total\s+vat|net\s+amount|"
+    r"total\s+standard\s+vat|payments?\s+by\s+bank|please\s+pay|"
+    r"bank(?:ing)?\s+details|assignment\s+notice|shift\s+notes|"
+    r"company\s+reg(?:istration)?|registered\s+office|company\s+number"
+    r")\b"
+)
+
+_FOOTER_CONTACT_RE = re.compile(
+    r"(?i)\b(?:"
+    r"iban|bic|swift|sort\s*code|account\s*(?:no|number)|"
+    r"email\s*:|tel\s*:|vat\s*(?:reg|no|number)"
+    r")\b"
+)
+
+_SUMMARY_LABEL_RE = re.compile(
+    r"(?i)^(?:total|vat\b|tax\b|net\b|balance\b|amount\s+due|sub\s*total|subtotal)"
+)
+
+_METADATA_LINE_RE = re.compile(
+    r"(?i)\b(?:"
+    r"invoice\s*(?:no|number|date)|due\s*date|po\s*number|"
+    r"account\s*name|terms\s*:"
+    r")\b"
+)
+
+_DATA_NUMBER_RE = re.compile(r"^[^\dA-Za-z]*\d+(?:[.,]\d+)*\s*%?$")
+_DECIMAL_OR_DATE_RE = re.compile(
+    r"\d+\.\d{2}|\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b"
+)
+
+
+def _band_norm_x_span(
+    band: RowBand, ox: float, rw: float
+) -> tuple[float, float]:
+    if not band.words or rw <= 0:
+        return 0.0, 0.0
+    bx0 = (min(w.x0 for w in band.words) - ox) / rw
+    bx1 = (max(w.x1 for w in band.words) - ox) / rw
+    return bx0, bx1
+
+
+def _is_stamp_band(band: RowBand, ny0: float) -> bool:
+    if ny0 > 0.08:
+        return False
+    text = _band_text(band)
+    if _APPROVAL_STAMP_RE.search(text):
+        return True
+    if ny0 < 0.045 and re.search(r"(?i)\bdate\s*:", text):
+        return True
+    return False
+
+
+def _is_table_header_band(
+    band: RowBand,
+    column_names: list[str],
+    ox: float,
+    rw: float,
+) -> bool:
+    if len(band.words) < 3:
+        return False
+    bx0, bx1 = _band_norm_x_span(band, ox, rw)
+    if bx1 - bx0 < 0.35:
+        return False
+    text = _band_text(band)
+    if _DECIMAL_OR_DATE_RE.search(text):
+        return False
+    custom_tokens = {
+        tok
+        for name in column_names
+        for tok in re.split(r"[^a-zA-Z]+", name.lower())
+        if len(tok) >= 2
+    }
+    vocab = _TABLE_HEADER_TOKENS | custom_tokens
+    alpha_tokens = [
+        tok
+        for w in band.words
+        for tok in re.split(r"[^a-zA-Z]+", w.text.lower())
+        if len(tok) >= 2
+    ]
+    if len(alpha_tokens) < 3:
+        return False
+    matched = [tok for tok in alpha_tokens if tok in vocab]
+    distinct_matched = set(matched)
+    has_metric = bool(distinct_matched & (_TABLE_HEADER_METRIC_TOKENS | custom_tokens))
+    return (
+        len(distinct_matched) >= 3
+        and has_metric
+        and len(matched) >= 0.55 * len(alpha_tokens)
+    )
+
+
+def _is_stop_band(band: RowBand, ox: float, rw: float) -> bool:
+    text = _band_text(band)
+    if _STRONG_STOP_RE.search(text) or _FOOTER_CONTACT_RE.search(text):
+        return True
+    bx0, _ = _band_norm_x_span(band, ox, rw)
+    if _SUMMARY_LABEL_RE.search(text.strip()) and (bx0 > 0.35 or len(band.words) <= 5):
+        return True
+    return False
+
+
+def _is_data_anchor_band(
+    band: RowBand,
+    ny0: float,
+    ox: float,
+    rw: float,
+    col_fracs: list[float] | None,
+    column_names: list[str],
+) -> bool:
+    if len(band.words) < 4:
+        return False
+    if _is_stamp_band(band, ny0):
+        return False
+    if _is_stop_band(band, ox, rw):
+        return False
+    if _is_table_header_band(band, column_names, ox, rw):
+        return False
+    text = _band_text(band)
+    if _METADATA_LINE_RE.search(text):
+        return False
+
+    bx0, bx1 = _band_norm_x_span(band, ox, rw)
+    if bx0 > 0.32 or bx1 < 0.62 or (bx1 - bx0) < 0.45:
+        return False
+
+    ordered = sorted(band.words, key=lambda w: (w.x0 + w.x1) / 2.0)
+    if not _DATA_NUMBER_RE.match(ordered[-1].text.strip()):
+        return False
+
+    right_numbers = sum(
+        1
+        for w in ordered
+        if (((w.x0 + w.x1) / 2.0 - ox) / rw) > 0.45
+        and _DATA_NUMBER_RE.match(w.text.strip())
+    )
+    if right_numbers < 2:
+        return False
+
+    if col_fracs and len(col_fracs) >= 4:
+        n_cols = len(col_fracs) - 1
+        span = max(bx1 - bx0, 1e-4)
+        occupied = {
+            _assign_col((((w.x0 + w.x1) / 2.0 - ox) / rw - bx0) / span, col_fracs)
+            for w in ordered
+        }
+        if len(occupied) < max(3, (n_cols + 1) // 2):
+            return False
+
+    return True
+
+
+def _fit_x_bounds_to_col_fracs(
+    table_words: list[Word],
+    ox: float,
+    rw: float,
+    col_fracs: list[float] | None,
+    x_bounds: tuple[float, float] | None,
+) -> tuple[float, float]:
+    raw_x0 = (min(w.x0 for w in table_words) - ox) / rw
+    raw_x1 = (max(w.x1 for w in table_words) - ox) / rw
+    default_x0 = max(0.0, raw_x0 - 0.008)
+    default_x1 = min(1.0, raw_x1 + 0.008)
+
+    if not col_fracs or len(col_fracs) < 3:
+        if x_bounds is not None:
+            return (
+                min(default_x0, max(0.0, x_bounds[0])),
+                max(default_x1, min(1.0, x_bounds[1])),
+            )
+        return default_x0, default_x1
+
+    internal = [f for f in col_fracs[1:-1] if 0.0 < f < 1.0]
+    if not internal:
+        return default_x0, default_x1
+
+    word_spans = [
+        (max(0.0, (w.x0 - ox) / rw), min(1.0, (w.x1 - ox) / rw))
+        for w in table_words
+    ]
+
+    left_pads = [0.004, 0.008, 0.014, 0.022, 0.032, 0.045, 0.058]
+    right_pads = [0.004, 0.008, 0.014, 0.022, 0.032, 0.045, 0.058]
+    candidates: list[tuple[float, float]] = []
+    for lp in left_pads:
+        for rp in right_pads:
+            cx0 = max(0.002, raw_x0 - lp)
+            cx1 = min(0.998, raw_x1 + rp)
+            if cx1 - cx0 >= 0.35:
+                candidates.append((cx0, cx1))
+
+    if x_bounds is not None:
+        bx0 = min(raw_x0 - 0.003, max(0.002, x_bounds[0]))
+        bx1 = max(raw_x1 + 0.003, min(0.998, x_bounds[1]))
+        if bx1 - bx0 >= 0.35:
+            candidates.append((bx0, bx1))
+
+    best_pair = (default_x0, default_x1)
+    best_score = float("inf")
+    for cx0, cx1 in candidates:
+        span = cx1 - cx0
+        dividers = [cx0 + f * span for f in internal]
+        straddle_penalty = 0.0
+        clearance_Need = 0.0
+        for d in dividers:
+            min_dist = 0.02
+            for wx0, wx1 in word_spans:
+                if wx0 < d < wx1:
+                    overlap = min(d - wx0, wx1 - d)
+                    straddle_penalty += 100.0 * overlap + 1.0
+                    min_dist = 0.0
+                else:
+                    dist = min(abs(d - wx0), abs(d - wx1))
+                    if dist < min_dist:
+                        min_dist = dist
+            clearance_Need += (0.02 - min_dist) * 2.0
+
+        reg = 0.25 * ((cx0 - default_x0) ** 2 + (cx1 - default_x1) ** 2)
+        if x_bounds is not None:
+            reg += 0.15 * ((cx0 - x_bounds[0]) ** 2 + (cx1 - x_bounds[1]) ** 2)
+        score = straddle_penalty + clearance_Need + reg
+        if score < best_score:
+            best_score = score
+            best_pair = (cx0, cx1)
+
+    return best_pair
+
+
+def infer_table_region(
+    words: list[Word],
+    origin: tuple[float, float],
+    size: tuple[float, float],
+    hints: InferHints,
+    *,
+    x_bounds: tuple[float, float] | None = None,
+) -> tuple[float, float, float, float] | None:
+    """Detect the normalized ``(x0, y0, x1, y1)`` line-item table region on a page.
+
+    Returns ``None`` when the page contains no line-item rows matching the
+    project layout (e.g. T&C pages, bank-detail backs, or timesheet backups).
+    """
+    ox, oy = origin
+    rw, rh = size
+    if rw <= 0 or rh <= 0:
+        return None
+
+    filtered = filter_words_in_region(words, origin, size)
+    if len(filtered) < 4:
+        return None
+
+    bands = infer_row_bands(filtered, origin, size)
+    if not bands:
+        return None
+
+    line_h = max(_median([_word_height(w) for w in filtered]), 1.0)
+    col_fracs = (
+        list(hints.col_fracs)
+        if hints.col_fracs and len(hints.col_fracs) >= 2
+        else None
+    )
+
+    header_indices = [
+        i
+        for i, b in enumerate(bands)
+        if not _is_stamp_band(b, (b.y0 - oy) / rh)
+        and _is_table_header_band(b, hints.column_names, ox, rw)
+    ]
+
+    all_anchors = [
+        i
+        for i, b in enumerate(bands)
+        if _is_data_anchor_band(
+            b, (b.y0 - oy) / rh, ox, rw, col_fracs, hints.column_names
+        )
+    ]
+    if not all_anchors:
+        return None
+
+    # If a table header sits above data anchors, restrict to bands below it.
+    top_header_idx: int | None = None
+    for h_idx in header_indices:
+        if any(a > h_idx for a in all_anchors):
+            top_header_idx = h_idx
+
+    if top_header_idx is not None:
+        anchor_indices = [a for a in all_anchors if a > top_header_idx]
+    else:
+        anchor_indices = list(all_anchors)
+
+    if not anchor_indices:
+        return None
+
+    first_anchor = anchor_indices[0]
+
+    # Stop at the first summary/subtotal/footer band or a large vertical break
+    # after the first data anchor.
+    first_stop_idx = len(bands)
+    prev_anchor_y1 = bands[first_anchor].y1
+    for idx in range(first_anchor + 1, len(bands)):
+        b = bands[idx]
+        if _is_stop_band(b, ox, rw):
+            first_stop_idx = idx
+            break
+        if idx in anchor_indices:
+            if (b.y0 - prev_anchor_y1) > 8.0 * line_h:
+                first_stop_idx = idx
+                break
+            prev_anchor_y1 = b.y1
+
+    anchor_indices = [a for a in anchor_indices if a < first_stop_idx]
+    if not anchor_indices:
+        return None
+
+    last_anchor = anchor_indices[-1]
+    anchor_words = [w for i in anchor_indices for w in bands[i].words]
+    anchor_min_x = (min(w.x0 for w in anchor_words) - ox) / rw
+
+    # Include wrapped prefix bands immediately above first_anchor (e.g. 2-line dates
+    # or wrapped shift/staff cells on bottom-aligned rows such as Vista).
+    start_idx = first_anchor
+    min_allowed_idx = (top_header_idx + 1) if top_header_idx is not None else 0
+    while start_idx > min_allowed_idx:
+        cand = bands[start_idx - 1]
+        ny0 = (cand.y0 - oy) / rh
+        gap = bands[start_idx].y0 - cand.y1
+        if gap > 0.85 * line_h:
+            break
+        if (
+            _is_stamp_band(cand, ny0)
+            or _is_stop_band(cand, ox, rw)
+            or _is_table_header_band(cand, hints.column_names, ox, rw)
+        ):
+            break
+        cand_text = _band_text(cand)
+        if _METADATA_LINE_RE.search(cand_text):
+            break
+        cx0, cx1 = _band_norm_x_span(cand, ox, rw)
+        has_lower_or_digit = bool(re.search(r"[a-z0-9]", cand_text))
+        if (
+            cx0 >= max(0.02, anchor_min_x - 0.12)
+            and cx1 <= 0.68
+            and has_lower_or_digit
+        ):
+            start_idx -= 1
+        else:
+            break
+
+    # Include wrapped suffix bands immediately below last_anchor (e.g. trailing
+    # date year on Glenlorn or multi-line description on TTM / Access Nursing).
+    end_idx = last_anchor
+    max_trailing = min(first_stop_idx - 1, last_anchor + 3)
+    while end_idx < max_trailing:
+        cand = bands[end_idx + 1]
+        ny0 = (cand.y0 - oy) / rh
+        gap = cand.y0 - bands[end_idx].y1
+        if gap > 0.85 * line_h:
+            break
+        if (
+            _is_stamp_band(cand, ny0)
+            or _is_stop_band(cand, ox, rw)
+            or _is_table_header_band(cand, hints.column_names, ox, rw)
+        ):
+            break
+        cand_text = _band_text(cand)
+        if _METADATA_LINE_RE.search(cand_text):
+            break
+        cx0, cx1 = _band_norm_x_span(cand, ox, rw)
+        if cx0 >= max(0.02, anchor_min_x - 0.12) and cx1 <= 0.68:
+            end_idx += 1
+        else:
+            break
+
+    table_bands = bands[start_idx : end_idx + 1]
+    table_words = [w for b in table_bands for w in b.words]
+    if not table_words:
+        return None
+
+    x0, x1 = _fit_x_bounds_to_col_fracs(
+        table_words, ox, rw, col_fracs, x_bounds
+    )
+
+    raw_y0 = (min(b.y0 for b in table_bands) - oy) / rh
+    raw_y1 = (max(b.y1 for b in table_bands) - oy) / rh
+    pad_y = min(0.005, 0.3 * (line_h / rh))
+
+    y0 = max(0.0, raw_y0 - pad_y)
+    if start_idx > 0:
+        upper_limit = ((bands[start_idx - 1].y1 + bands[start_idx].y0) / 2.0 - oy) / rh
+        y0 = max(y0, min(raw_y0, upper_limit))
+
+    y1 = min(1.0, raw_y1 + pad_y)
+    if end_idx + 1 < len(bands):
+        lower_limit = ((bands[end_idx].y1 + bands[end_idx + 1].y0) / 2.0 - oy) / rh
+        y1 = min(y1, max(raw_y1, lower_limit))
+
+    if x1 - x0 < 0.05 or y1 - y0 < 0.005:
+        return None
+
+    return (
+        max(0.0, min(1.0, x0)),
+        max(0.0, min(1.0, y0)),
+        max(0.0, min(1.0, x1)),
+        max(0.0, min(1.0, y1)),
+    )
+

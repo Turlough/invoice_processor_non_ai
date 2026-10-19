@@ -10,6 +10,7 @@ from invoice_app.grid_infer import (
     filter_words_in_region,
     infer_from_words,
     infer_row_bands,
+    infer_table_region,
 )
 from invoice_app.pdf_text import Word
 
@@ -177,6 +178,110 @@ class TestInferFromWords(unittest.TestCase):
         self.assertEqual(res.rows[0]["Description"], "Line 1 prefix Line 1 main")
         self.assertEqual(res.rows[1]["Description"], "Line 2 prefix Line 2 main")
 
+
+class TestInferTableRegion(unittest.TestCase):
+    def test_detects_line_item_band_between_header_and_subtotal(self) -> None:
+        words = [
+            # Top approval stamp (y=10..25)
+            _w(50, 10, 180, 25, "Date : 01/05/2026"),
+            _w(350, 10, 520, 25, "Status : Approved"),
+            _w(650, 10, 820, 25, "User : Approver"),
+            # Metadata block (y=120..140)
+            _w(50, 120, 220, 140, "Invoice Date: 01/05/2026"),
+            # Table header (y=300..318)
+            _w(60, 300, 200, 318, "Description"),
+            _w(520, 300, 580, 318, "Hours"),
+            _w(680, 300, 740, 318, "Rate"),
+            _w(840, 300, 910, 318, "Total"),
+            # Row 1 with leading wrap (y=330..346 and y=350..366)
+            _w(60, 330, 210, 346, "Sunday, February 1,"),
+            _w(60, 350, 140, 366, "2026 HCA"),
+            _w(520, 350, 560, 366, "12.00"),
+            _w(680, 350, 730, 366, "25.00"),
+            _w(840, 350, 910, 366, "300.00"),
+            # Row 2 with trailing wrap (y=390..406 and y=410..426)
+            _w(60, 390, 220, 406, "Monday, February 2"),
+            _w(520, 390, 560, 406, "8.00"),
+            _w(680, 390, 730, 406, "25.00"),
+            _w(840, 390, 910, 406, "200.00"),
+            _w(60, 410, 190, 426, "Grade : HCA"),
+            # Subtotal / footer (y=500..520)
+            _w(650, 500, 740, 520, "Subtotal"),
+            _w(840, 500, 910, 520, "500.00"),
+        ]
+        hints = InferHints(
+            n_cols=4,
+            col_fracs=[0.0, 0.45, 0.65, 0.82, 1.0],
+            column_names=["Description", "Hours", "Rate", "Total"],
+        )
+        region = infer_table_region(words, (0.0, 0.0), (1000.0, 1000.0), hints)
+        self.assertIsNotNone(region)
+        assert region is not None
+        x0, y0, x1, y1 = region
+        self.assertGreater(y0, 0.318)
+        self.assertLessEqual(y0, 0.330)
+        self.assertGreaterEqual(y1, 0.426)
+        self.assertLess(y1, 0.500)
+        self.assertLessEqual(x0, 0.060)
+        self.assertGreaterEqual(x1, 0.910)
+
+    def test_returns_none_on_non_table_page(self) -> None:
+        words = [
+            _w(50, 100, 250, 120, "ASSIGNMENT NOTICE"),
+            _w(50, 160, 450, 180, "Payment Terms: 30 Days from invoice date"),
+            _w(50, 220, 380, 240, "IBAN: IE29AIBK93115212345678"),
+            _w(50, 260, 280, 280, "BIC: AIBKIE2D"),
+        ]
+        hints = InferHints(
+            n_cols=5,
+            col_fracs=[0.0, 0.5, 0.65, 0.78, 0.88, 1.0],
+        )
+        region = infer_table_region(words, (0.0, 0.0), (1000.0, 1000.0), hints)
+        self.assertIsNone(region)
+
+    def test_single_row_with_three_wrapped_lines_and_tax_code_column(self) -> None:
+        words = [
+            _w(100, 300, 180, 315, "Details"),
+            _w(420, 300, 500, 315, "Charge"),
+            _w(550, 300, 600, 315, "Tax"),
+            _w(650, 300, 700, 315, "Units"),
+            _w(750, 300, 800, 315, "Rate"),
+            _w(850, 300, 910, 315, "Total"),
+            # Single item with 3 lines in col 0 and "VAT" in Tax column
+            _w(100, 340, 240, 352, "Keelyn Mcmahon"),
+            _w(420, 340, 520, 352, "DayShiftMonSat"),
+            _w(550, 340, 590, 352, "VAT"),
+            _w(650, 340, 690, 352, "5.00"),
+            _w(750, 340, 795, 352, "31.13"),
+            _w(850, 340, 905, 352, "155.65"),
+            _w(100, 354, 240, 366, "31/01-31/01/2026"),
+            _w(100, 368, 210, 380, "Grade : HCA"),
+            # Footer
+            _w(100, 650, 350, 668, "Bank Details : Allied Irish Bank"),
+            _w(650, 650, 750, 668, "Net Amount"),
+            _w(850, 650, 905, 668, "155.65"),
+        ]
+        hints = InferHints(
+            n_cols=6,
+            col_fracs=[0.0, 0.36, 0.54, 0.64, 0.76, 0.88, 1.0],
+        )
+        region = infer_table_region(words, (0.0, 0.0), (1000.0, 1000.0), hints)
+        self.assertIsNotNone(region)
+        assert region is not None
+        rx0, ry0, rx1, ry1 = region
+        res = infer_from_words(
+            words,
+            (rx0 * 1000.0, ry0 * 1000.0),
+            ((rx1 - rx0) * 1000.0, (ry1 - ry0) * 1000.0),
+            hints,
+        )
+        self.assertEqual(res.data_row_count, 1)
+        self.assertEqual(
+            res.rows[0]["col_1"],
+            "Keelyn Mcmahon 31/01-31/01/2026 Grade : HCA",
+        )
+        self.assertEqual(res.rows[0]["col_3"], "VAT")
+        self.assertEqual(res.rows[0]["col_6"], "155.65")
 
 
 if __name__ == "__main__":

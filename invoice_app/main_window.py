@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import (
 )
 
 from invoice_app.document_layout import load_layout, save_page_region
-from invoice_app.grid_infer import InferHints, infer_from_words
+from invoice_app.grid_infer import InferHints, infer_from_words, infer_table_region
 from invoice_app.ocr_cache import (
     load_cache,
     load_page_words,
@@ -320,6 +320,8 @@ class MainWindow(QMainWindow):
         layout_menu.addSeparator()
         table_region = layout_menu.addAction("&Table region…")
         table_region.triggered.connect(self._table_region)
+        auto_region = layout_menu.addAction("Auto-&detect region")
+        auto_region.triggered.connect(self._auto_detect_table_region)
         draw_grid = layout_menu.addAction("&Draw grid")
         draw_grid.triggered.connect(self._draw_grid)
         save_col_fracs = layout_menu.addAction("Save column &fracs")
@@ -486,13 +488,46 @@ class MainWindow(QMainWindow):
     def _on_pdf_loaded(self) -> None:
         pdf_path = self._current_pdf_path()
         if pdf_path is not None:
-            self._pdf_panel.set_page_regions(load_layout(pdf_path))
+            regions = load_layout(pdf_path)
+            regions = self._auto_detect_missing_regions(pdf_path, regions)
+            self._pdf_panel.set_page_regions(regions)
             self._pdf_panel.refresh_page_layout()
         if self._auto_deskew:
             self._enable_auto_deskew(report=False)
         self._apply_cached_ocr_for_current_page()
         self._auto_apply_layout_after_region()
         self._resize_table()
+
+    def _auto_detect_missing_regions(
+        self,
+        pdf_path: Path,
+        regions: dict[int, tuple[float, float, float, float]],
+    ) -> dict[int, tuple[float, float, float, float]]:
+        """Infer and persist table regions for any page not yet in ``regions``."""
+        doc = self._pdf_panel.document()
+        if doc is None:
+            return regions
+        hints = self._infer_hints()
+        x_bounds = self._project.table_x_range() if self._project is not None else None
+        updated = dict(regions)
+        for page_idx in range(len(doc)):
+            if page_idx in updated:
+                continue
+            page_words = load_page_words(pdf_path, page_idx)
+            if not page_words:
+                continue
+            rect = doc[page_idx].rect
+            pw, ph = float(rect.width), float(rect.height)
+            detected = infer_table_region(
+                page_words, (0.0, 0.0), (pw, ph), hints, x_bounds=x_bounds
+            )
+            if detected is not None:
+                updated[page_idx] = detected
+                try:
+                    save_page_region(pdf_path, page_idx, detected)
+                except OSError:
+                    pass
+        return updated
 
     def _on_pdf_page_changed(self) -> None:
         self._apply_cached_ocr_for_current_page()
@@ -637,6 +672,48 @@ class MainWindow(QMainWindow):
             return
         self._pdf_panel.begin_table_region()
 
+    def _auto_detect_table_region(self) -> None:
+        doc = self._pdf_panel.document()
+        if doc is None:
+            QMessageBox.information(self, "Auto-detect region", "Load a PDF first.")
+            return
+        page_index = self._pdf_panel.page_index()
+        pdf_path = self._current_pdf_path()
+        words = self._table_words if self._table_words_space == "pdf" else None
+        if not words and pdf_path is not None:
+            words = load_page_words(pdf_path, page_index)
+        if not words:
+            QMessageBox.information(
+                self,
+                "Auto-detect region",
+                "Run Read → Show text rectangles or Read → OCR batch first.",
+            )
+            return
+        pw, ph = self._pdf_panel.page_size_pdf()
+        hints = self._infer_hints()
+        x_bounds = self._project.table_x_range() if self._project is not None else None
+        detected = infer_table_region(
+            words, (0.0, 0.0), (pw, ph), hints, x_bounds=x_bounds
+        )
+        if detected is None:
+            self._pdf_panel.set_upright_page_region(page_index, None)
+            self._table.clearContents()
+            self._pdf_panel.overlay().clear_invalid_cells()
+            self._resize_table()
+            self.statusBar().showMessage(
+                "Auto-detect region: no line-item table found on this page.", 8000
+            )
+            return
+        self._pdf_panel.set_upright_page_region(page_index, detected)
+        if pdf_path is not None:
+            try:
+                save_page_region(pdf_path, page_index, detected)
+            except OSError as exc:
+                self.statusBar().showMessage(f"Could not save table region: {exc}", 8000)
+        self._auto_apply_layout_after_region()
+        self._resize_table()
+        self.statusBar().showMessage("Auto-detected line-item table region.", 8000)
+
     def _draw_grid(self) -> None:
         if self._pdf_panel.document() is None:
             QMessageBox.information(self, "Draw grid", "Load a PDF first.")
@@ -673,6 +750,9 @@ class MainWindow(QMainWindow):
             )
             return
         self._project.set_col_fracs(fracs)
+        norm = self._pdf_panel.upright_page_region()
+        if norm is not None:
+            self._project.set_table_x_range(norm[0], norm[2])
         self.statusBar().showMessage(
             f"Saved {len(fracs) - 1} column(s) to project “{self._project.name}”.",
             8000,
@@ -962,8 +1042,15 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "OCR batch", summary)
         else:
             QMessageBox.information(self, "OCR batch", summary)
+        pdf_path = self._current_pdf_path()
+        if pdf_path is not None:
+            regions = load_layout(pdf_path)
+            regions = self._auto_detect_missing_regions(pdf_path, regions)
+            self._pdf_panel.set_page_regions(regions)
+            self._pdf_panel.refresh_page_layout()
         self._apply_cached_ocr_for_current_page()
         self._auto_apply_layout_after_region()
+        self._resize_table()
 
     def _on_ocr_batch_failed(self, message: str) -> None:
         self._ocr_batch_mode = False

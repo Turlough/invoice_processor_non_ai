@@ -58,6 +58,7 @@ class TestProjectsConfig(unittest.TestCase):
 
             project.set_data_directory(data_dir)
             project.set_col_fracs([0.0, 0.4, 0.7, 1.0])
+            project.set_table_x_range(0.045, 0.933)
             project.set_column_entry(0, name="Description", anchor=False, n_cols=3)
             project.set_column_entry(1, name="Hours", anchor=True, n_cols=3)
             project.set_column_entry(2, name="  ", anchor=True, n_cols=3)
@@ -65,6 +66,7 @@ class TestProjectsConfig(unittest.TestCase):
             reloaded = Project.load("Emerald")
             self.assertEqual(reloaded.data_directory, data_dir)
             self.assertEqual(reloaded.col_fracs(), [0.0, 0.4, 0.7, 1.0])
+            self.assertEqual(reloaded.table_x_range(), (0.045, 0.933))
             self.assertEqual(reloaded.column_names(), ["Description", "Hours", "Col 3"])
             self.assertEqual(reloaded.anchor_cols(3), [False, True, True])
             self.assertEqual(reloaded.column_entry(0, 3), ("Description", False))

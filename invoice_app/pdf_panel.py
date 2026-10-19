@@ -253,6 +253,19 @@ class PdfPanel(QWidget):
         self._page_regions = dict(regions)
         self._region_space = {}
 
+    def set_upright_page_region(
+        self, page_index: int, region: tuple[float, float, float, float] | None
+    ) -> None:
+        """Set or clear the upright-page normalized table region for ``page_index``."""
+        if region is None:
+            self._page_regions.pop(page_index, None)
+            self._region_space.pop(page_index, None)
+        else:
+            self._page_regions[page_index] = region
+            self._region_space[page_index] = 0.0
+        if page_index == self._page_index:
+            self._apply_region_for_current_page(clear_grid=region is None)
+
     def set_deskew_angles(self, angles: dict[int, float]) -> None:
         """Rotate pages by the opposite of each OCR ``skew-deg``.
 
